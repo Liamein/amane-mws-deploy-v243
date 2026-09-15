@@ -1,0 +1,42 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+
+const DEFAULTS = Object.freeze({ auditLogChannelId: null, memberLogChannelId: null, updateChannelId: null, gameStatusChannelId: null, gameStatusPanelChannelId: null, gameStatusPanelMessageId: null, privateApexGuideMessageId: null, lastAnnouncedVersion: null, lastOperationsDigestAt: null, lastPanelRepairAt: null, lastPanelRepairSummary: null });
+
+function normalizeSettings(value) {
+  return Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, value?.[key] ?? DEFAULTS[key]]));
+}
+
+export class ServerSettingsStore {
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.guilds = {};
+  }
+
+  async load() {
+    try {
+      const saved = JSON.parse(await readFile(this.filePath, 'utf8'));
+      this.guilds = saved?.guilds && typeof saved.guilds === 'object'
+        ? Object.fromEntries(Object.entries(saved.guilds).map(([guildId, value]) => [guildId, normalizeSettings(value)]))
+        : {};
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      this.guilds = {};
+    }
+  }
+
+  async save() {
+    await mkdir(new URL('.', this.filePath), { recursive: true });
+    await writeFile(this.filePath, JSON.stringify({ guilds: this.guilds }, null, 2), 'utf8');
+  }
+
+  get(guildId) { return normalizeSettings(this.guilds[guildId]); }
+  setMemberLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), memberLogChannelId: channelId }; }
+  setUpdateChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), updateChannelId: channelId }; }
+  setGameStatusChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), gameStatusChannelId: channelId }; }
+  setGameStatusPanel(guildId, channelId, messageId) { this.guilds[guildId] = { ...this.get(guildId), gameStatusPanelChannelId: channelId, gameStatusPanelMessageId: messageId }; }
+  setPrivateApexGuidePanel(guildId, messageId) { this.guilds[guildId] = { ...this.get(guildId), privateApexGuideMessageId: messageId }; }
+  setAuditLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), auditLogChannelId: channelId }; }
+  markAnnounced(guildId, version) { this.guilds[guildId] = { ...this.get(guildId), lastAnnouncedVersion: version }; }
+  markOperationsDigest(guildId, timestamp) { this.guilds[guildId] = { ...this.get(guildId), lastOperationsDigestAt: timestamp }; }
+  markPanelRepair(guildId, { timestamp = Date.now(), summary = null } = {}) { this.guilds[guildId] = { ...this.get(guildId), lastPanelRepairAt: timestamp, lastPanelRepairSummary: summary }; }
+}
