@@ -200,8 +200,11 @@ export class GuestAccess {
               this.store.data.sessions[member.id] = candidate; await this.store.save();
               return candidate;
             });
-            newlyClaimed = Boolean(session?.status === 'active' && session.userId === member.id);
-            break;
+            if (session) {
+              newlyClaimed = Boolean(session.status === 'active' && session.userId === member.id);
+              break;
+            }
+            continue;
           }
           if (attempt < 3) { await this.delay(300); member = await this.freshMember(member.guild, member.id) || member; }
         }
