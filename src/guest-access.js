@@ -80,6 +80,19 @@ export class GuestAccess {
   }
   async start() {
     await this.store.load(); this.ready = true;
+    // Revoke any pre-change, user-targeted invites. They must not remain
+    // usable after switching to issuer-only one-use links.
+    let migrated = false;
+    for (const [key, session] of Object.entries(this.store.data.sessions)) {
+      if (!session?.userId || !['pending', 'preparing'].includes(session.status)) continue;
+      await this.revokeInvite(session);
+      session.status = 'closed';
+      session.closedAt = Date.now();
+      session.closeReason = 'ユーザーID指定方式からの移行';
+      delete this.store.data.sessions[key];
+      migrated = true;
+    }
+    if (migrated) await this.store.save();
     await this.sweep();
     this.timer = setInterval(() => this.sweep().catch(e => this.reportError('ゲスト参加の終了確認', e)), 15_000);
     this.timer.unref();
