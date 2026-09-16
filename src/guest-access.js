@@ -27,11 +27,6 @@ function matchesOverwrite(overwrite, patch) {
     (yes ? overwrite.allow.has(P[key], false) && !overwrite.deny.has(P[key], false)
       : overwrite.deny.has(P[key], false) && !overwrite.allow.has(P[key], false))));
 }
-export function parseTargetUsers(csv) {
-  const rows = String(csv).replace(/^\uFEFF/, '').trim().split(/\r?\n/).map(x => x.trim().replace(/^"|"$/g, ''));
-  if (rows.shift() !== 'user_id' || rows.some(x => !/^\d{17,20}$/.test(x))) return [];
-  return rows;
-}
 export function ownsGuestMembership(session, member) {
   return Boolean(session?.status === 'active' && member?.id === session.userId
     && member.guild?.id === GUEST_GUILD_ID && member.id !== GUEST_OWNER_ID && !member.user?.bot
@@ -46,11 +41,12 @@ export function guestExitReason(session, voiceChannelId, now = Date.now()) {
 
 export class GuestAccessStore {
   constructor(file = new URL('../data/guest-access.json', import.meta.url)) {
-    this.file = file; this.data = { roles: {}, sessions: {} }; this.writing = Promise.resolve();
+    this.file = file; this.data = { roles: {}, sessions: {}, pendingInvites: {} }; this.writing = Promise.resolve();
   }
   async load() {
     try { this.data = { ...this.data, ...JSON.parse(await readFile(this.file, 'utf8')) }; }
     catch (e) { if (e.code !== 'ENOENT') throw e; }
+    this.data.pendingInvites ||= {};
   }
   save() {
     const snapshot = JSON.stringify(this.data, null, 2);
@@ -78,7 +74,9 @@ export class GuestAccess {
     const session = this.store.data.sessions[member.id];
     return ownsGuestMembership(session, member) || Boolean(session?.status === 'pending'
       && member.joinedTimestamp >= session.createdAt && member.joinedTimestamp <= session.inviteExpiresAt)
-      || Object.values(this.store.data.roles).some(id => member.roles?.cache.has(id));
+      || Object.values(this.store.data.pendingInvites).some(p => p.status === 'pending'
+        && member.joinedTimestamp >= p.createdAt && member.joinedTimestamp <= p.inviteExpiresAt
+        && member.roles?.cache.has(p.roleId));
   }
   async start() {
     await this.store.load(); this.ready = true;
@@ -116,57 +114,33 @@ export class GuestAccess {
       return role;
     });
   }
-  async verifyTargetFile(code, userId) {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      try {
-        const csv = await this.client.rest.get(`/invites/${encodeURIComponent(code)}/target-users`);
-        const text = Buffer.isBuffer(csv) ? csv.toString('utf8')
-          : csv instanceof ArrayBuffer ? Buffer.from(csv).toString('utf8') : typeof csv === 'string' ? csv : '';
-        const ids = parseTargetUsers(text);
-        if (ids.length !== 1 || ids[0] !== userId) throw new GuestAccessError('招待相手の限定を確認できなかったため、リンクを発行しません。');
-        return;
-      } catch (e) {
-        if (e.code !== 40115 || attempt === 9) throw e;
-        await this.delay(Math.min(1000 + attempt * 500, 3000));
-      }
-    }
-  }
-  async issue({ guild, inviter, voiceChannelId, userId }) {
+  async issue({ guild, inviter, voiceChannelId }) {
     if (!this.ready) throw new GuestAccessError('ゲスト機能の起動準備中です。');
-    if (guild.id !== GUEST_GUILD_ID || !/^\d{17,20}$/.test(userId)) throw new GuestAccessError('招待相手のDiscordユーザーIDを正しく入力してください。');
-    return this.serial(`user:${userId}`, async () => {
-      if (userId === GUEST_OWNER_ID || await this.freshMember(guild, userId)) throw new GuestAccessError('既存メンバーはゲストに変更できません。未参加の相手のIDを指定してください。');
-      const user = await this.client.users.fetch(userId);
-      if (user.bot) throw new GuestAccessError('Botアカウントはゲスト対象にできません。');
+    if (guild.id !== GUEST_GUILD_ID) throw new GuestAccessError('対象サーバーが違います。');
+    return this.serial(`voice:${voiceChannelId}`, async () => {
       const voice = await guild.channels.fetch(voiceChannelId);
       if (voice?.type !== ChannelType.GuildVoice || !voice.permissionsFor(inviter)?.has([P.ViewChannel, P.Connect])) throw new GuestAccessError('自分が閲覧・接続できるVCを選択してください。');
       const bot = await guild.members.fetchMe();
       if (!bot.permissions.has([P.ManageRoles, P.ManageGuild, P.KickMembers])) throw new GuestAccessError('ゲストの制限・自動退出に必要なBot権限が不足しています。');
-      const old = this.store.data.sessions[userId];
-      if (old && ['pending', 'active', 'preparing'].includes(old.status) && old.inviteExpiresAt > Date.now()) throw new GuestAccessError('この相手には発行済みのゲスト招待があります。');
-      if (old && Object.keys(old.overwrites || {}).length) await this.cleanupOverwrites(guild, old);
       const role = await this.ensureRole(guild, voiceChannelId);
-      if (await this.freshMember(guild, userId)) throw new GuestAccessError('相手がすでに参加したため、ゲスト招待を取り消しました。');
-      const session = { id: randomUUID(), userId, inviterId: inviter.id, voiceChannelId, roleId: role.id,
+      const session = { id: randomUUID(), inviterId: inviter.id, voiceChannelId, roleId: role.id,
         createdAt: Date.now(), inviteExpiresAt: Date.now() + GUEST_INVITE_AGE * 1000, status: 'preparing', overwrites: {} };
-      this.store.data.sessions[userId] = session; await this.store.save();
       let invite;
       try {
         invite = await this.client.rest.post(Routes.channelInvites(voiceChannelId), {
           body: { max_age: GUEST_INVITE_AGE, max_uses: 1, temporary: false, unique: true, role_ids: [role.id] },
-          files: [{ name: 'guest.csv', key: 'target_users_file', data: Buffer.from(`user_id\n${userId}\n`), contentType: 'text/csv' }],
-          reason: `VC限定ゲスト招待（対象 ${userId}／依頼 ${inviter.id}）`,
+          reason: `VC限定ゲスト招待（依頼 ${inviter.id}）`,
         });
-        session.inviteCode = invite.code; await this.store.save();
         if (!invite.code || invite.channel?.id !== voiceChannelId || !invite.roles?.some(r => r.id === role.id)) {
           throw new GuestAccessError('ゲスト用ロールの自動付与を確認できず、招待を取り消しました。');
         }
-        await this.verifyTargetFile(invite.code, userId);
-        session.status = 'pending'; await this.store.save();
+        session.inviteCode = invite.code; session.status = 'pending';
+        this.store.data.pendingInvites[invite.code] = session; await this.store.save();
         return session;
       } catch (e) {
-        if (invite?.code) await this.revokeInvite(session);
-        session.status = 'failed'; await this.store.save(); throw e;
+        if (invite?.code) await this.revokeInvite({ inviteCode: invite.code });
+        if (invite?.code) delete this.store.data.pendingInvites[invite.code];
+        await this.store.save(); throw e;
       }
     });
   }
@@ -202,9 +176,47 @@ export class GuestAccess {
     if (isNativeGuest(member)) return true;
     if (member.guild.id !== GUEST_GUILD_ID || member.user.bot || member.id === GUEST_OWNER_ID) return false;
     return this.serial(`user:${member.id}`, async () => {
-      const session = this.store.data.sessions[member.id];
+      let session = this.store.data.sessions[member.id];
+      if (session?.status === 'active' && !ownsGuestMembership(session, member)) {
+        await this.endSession(member.guild, session, '前回のゲスト参加は終了しました');
+      }
+      if (session && !['pending', 'active'].includes(session.status)) {
+        if (Object.keys(session.overwrites || {}).length) await this.cleanupOverwrites(member.guild, session);
+        delete this.store.data.sessions[member.id]; await this.store.save(); session = null;
+      }
+      let newlyClaimed = false;
+      if (!session && Object.keys(this.store.data.pendingInvites).length) {
+        // Community invites grant the selected role on acceptance. The gateway
+        // member payload can arrive before the role is visible to a REST fetch.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const candidate = Object.values(this.store.data.pendingInvites).find(p => p.status === 'pending'
+            && p.createdAt <= member.joinedTimestamp && member.joinedTimestamp <= p.inviteExpiresAt
+            && member.roles.cache.has(p.roleId));
+          if (candidate) {
+            session = await this.serial('claim', async () => {
+              if (this.store.data.sessions[member.id] || this.store.data.pendingInvites[candidate.inviteCode] !== candidate) return this.store.data.sessions[member.id];
+              candidate.userId = member.id; candidate.joinedAt = member.joinedTimestamp; candidate.status = 'active';
+              delete this.store.data.pendingInvites[candidate.inviteCode];
+              this.store.data.sessions[member.id] = candidate; await this.store.save();
+              return candidate;
+            });
+            newlyClaimed = Boolean(session?.status === 'active' && session.userId === member.id);
+            break;
+          }
+          if (attempt < 3) { await this.delay(300); member = await this.freshMember(member.guild, member.id) || member; }
+        }
+      }
       if (!session || !['pending', 'active'].includes(session.status)) return false;
-      if (ownsGuestMembership(session, member)) return true;
+      if (ownsGuestMembership(session, member)) {
+        if (newlyClaimed) {
+          try { await this.restrictMember(member, session); }
+          catch (e) {
+            await this.reportError('ゲストの閲覧制限', e);
+            await this.endSession(member.guild, session, '閲覧範囲を安全に制限できないためゲスト参加を終了');
+          }
+        }
+        return true;
+      }
       if (session.status !== 'pending' || member.joinedTimestamp < session.createdAt || member.joinedTimestamp > session.inviteExpiresAt) return false;
       session.joinedAt = member.joinedTimestamp; session.status = 'active';
       if (member.voice?.channelId === session.voiceChannelId) session.connectedAt = Date.now();
@@ -254,6 +266,11 @@ export class GuestAccess {
   async sweep() {
     return this.serial('sweep', async () => {
       const guild = this.client.guilds.cache.get(GUEST_GUILD_ID); if (!guild) return;
+      for (const [code, session] of Object.entries(this.store.data.pendingInvites)) {
+        if (Date.now() <= session.inviteExpiresAt) continue;
+        await this.revokeInvite(session);
+        delete this.store.data.pendingInvites[code]; await this.store.save();
+      }
       for (const session of Object.values(this.store.data.sessions)) {
         if (session.status === 'pending') {
           const member = await this.freshMember(guild, session.userId);

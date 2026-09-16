@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, Events, ModalBuilder, PermissionFlagsBits, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, Events, PermissionFlagsBits } from 'discord.js';
 
 export const INVITE_PANEL_GUILD_ID = '1414606962846601302';
 export const INVITE_PANEL_CHANNEL_ID = '1518034512574025839';
@@ -23,11 +23,11 @@ export function buildInvitePanel({ guestEnabled = false } = {}) {
     .setDescription('通常参加と、一時的なVCゲストを分けて案内します。目的に合う方を選んでください。')
     .addFields(
       { name: guestEnabled ? '🎟️ ゲスト用｜VC限定・認証不要' : '🎟️ ゲスト用｜VC限定（準備中）', value: guestEnabled
-        ? '一時的に招待する相手のDiscordユーザーIDと参加先VCを指定します。\nリンクは**指定したDiscordアカウントだけ**・**1時間限定**です。認証は不要で、指定VCとそのチャット以外は閲覧できません。VC退出の30秒後に自動退出します。'
+        ? '参加先VCを選ぶだけで発行できます。ユーザーIDの入力は不要です。\nリンクは**発行した本人にだけ表示**され、**1時間・1回限り**有効です。受け取った人が利用できるため、共有先にはご注意ください。参加後は認証不要で、指定VCとそのチャット以外は閲覧できません。VC退出の30秒後に自動退出します。'
         : '安全なVC限定ゲスト機能を準備中です。通常の一時参加リンクで代用することはありません。' },
       { name: '🌐 通常参加｜カスタムURL', value: `誰でも利用できる通常の参加リンクです。参加後は通常のサーバー認証が必要です。\n${VANITY_URL}` },
       { name: '📌 違い', value: '通常参加はサーバー全体を利用する方向けです。\nVC限定ゲストは一時利用向けで、指定VC以外にはアクセスできません。' },
-    ).setFooter({ text: '通常参加URLは公開リンクです。一時ゲストだけ対象アカウントと有効時間を制限します。' })],
+    ).setFooter({ text: '通常参加URLは公開リンクです。ゲストリンクは発行者だけに表示されますが、転送先でも使用できます。' })],
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${PREFIX}guest`).setLabel(guestEnabled ? 'VC限定ゲストを発行' : 'VC限定ゲスト：準備中').setEmoji('🎟️').setStyle(guestEnabled ? ButtonStyle.Success : ButtonStyle.Secondary).setDisabled(!guestEnabled),
       new ButtonBuilder().setLabel('通常参加URLを開く').setEmoji('🌐').setStyle(ButtonStyle.Link).setURL(VANITY_URL),
@@ -196,23 +196,17 @@ export class InvitePanel {
   async issueGuest(interaction) {
     if (!this.guestAccess?.ready) throw new InviteUserError('VC限定ゲスト機能の起動準備中です。少し待ってからお試しください。');
     await this.requireViewer(interaction.user.id);
-    return interaction.editReply({ content: '🎟️ **参加先のボイスチャンネルを選択してください。**\n選んだVCとそのチャットだけを、対象の1アカウントに1時間だけ許可します。', components: [new ActionRowBuilder().addComponents(
+    return interaction.editReply({ content: '🎟️ **参加先のボイスチャンネルを選択してください。**\n選んだVCとそのチャットだけを、リンクを使用した1人に許可します。リンクはあなただけに表示されます。', components: [new ActionRowBuilder().addComponents(
       new ChannelSelectMenuBuilder().setCustomId(`${PREFIX}guest-channel`).setPlaceholder('参加を許可するVCを選択').setChannelTypes(ChannelType.GuildVoice).setMinValues(1).setMaxValues(1),
     )] });
   }
   async selectGuestChannel(interaction) {
     if (!this.guestAccess?.ready) throw new InviteUserError('VC限定ゲスト機能の起動準備中です。');
-    const { member } = await this.requireViewer(interaction.user.id);
+    const { guild, member } = await this.requireViewer(interaction.user.id);
     const voice = interaction.channels.first();
     if (!voice || voice.type !== ChannelType.GuildVoice || !voice.permissionsFor(member)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) throw new InviteUserError('自分が閲覧・接続できるVCを選択してください。');
-    return interaction.showModal(new ModalBuilder().setCustomId(`${PREFIX}guest-submit:${voice.id}`).setTitle('VC限定ゲストを発行')
-      .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('guest-user-id').setLabel('招待する相手のDiscordユーザーID').setPlaceholder('例: 123456789012345678').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(17).setMaxLength(20))));
-  }
-  async submitGuest(interaction, voiceChannelId) {
-    const { guild, member } = await this.requireViewer(interaction.user.id);
-    const userId = interaction.fields.getTextInputValue('guest-user-id').trim();
-    const session = await this.guestAccess.issue({ guild, inviter: member, voiceChannelId, userId });
-    return interaction.editReply({ content: `✅ **VC限定ゲスト招待を発行しました。**\n対象: <@${userId}>（${userId}）\n参加先: <#${voiceChannelId}>\n有効期限: <t:${Math.floor(session.inviteExpiresAt / 1000)}:R>\n\n🔒 このリンクは指定した相手だけが利用できます。参加後は認証不要・指定VCとそのチャット以外は閲覧できず、VC退出から30秒後に自動退出します。\nhttps://discord.gg/${session.inviteCode}`, allowedMentions: { parse: [] }, components: [] });
+    const session = await this.guestAccess.issue({ guild, inviter: member, voiceChannelId: voice.id });
+    return interaction.editReply({ content: `✅ **VC限定ゲスト招待を発行しました。**\n参加先: <#${voice.id}>\n有効期限: <t:${Math.floor(session.inviteExpiresAt / 1000)}:R>（1回限り）\n\n🔒 この表示は発行したあなただけに見えます。ただし、リンクを受け取った人は利用できます。参加後は認証不要・指定VCとそのチャット以外は閲覧できず、VC退出から30秒後に自動退出します。\nhttps://discord.gg/${session.inviteCode}`, allowedMentions: { parse: [] }, components: [] });
   }
   async handle(interaction) {
     try {
@@ -221,10 +215,12 @@ export class InvitePanel {
       if (interaction.guildId !== INVITE_PANEL_GUILD_ID || interaction.channelId !== INVITE_PANEL_CHANNEL_ID) {
         throw new InviteUserError('指定された招待パネルのチャンネルから操作してください。');
       }
-      if (action === 'guest-channel' && interaction.isChannelSelectMenu()) return await this.selectGuestChannel(interaction);
+      if (action === 'guest-channel' && interaction.isChannelSelectMenu()) {
+        await interaction.deferUpdate();
+        return await this.selectGuestChannel(interaction);
+      }
       await interaction.deferReply({ ...(interaction.inGuild() ? { ephemeral: true } : {}) });
       if (action === 'guest' && interaction.isButton()) return await this.issueGuest(interaction);
-      if (action.startsWith('guest-submit:') && interaction.isModalSubmit()) return await this.submitGuest(interaction, action.split(':')[1]);
       throw new InviteUserError('この操作は利用できません。最新のパネルから操作してください。');
     } catch (error) {
       if (!(error instanceof InviteUserError)) await this.reportError('招待パネル', error).catch(() => {});

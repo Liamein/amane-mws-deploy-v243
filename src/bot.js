@@ -94,14 +94,14 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', 'game-status', 'rank', 'rankstart', 'rankend', 'apex-map', 'team', 'apex-panel', '機能要望']);
-const BOT_VERSION = '2.4.3';
+const BOT_VERSION = '2.4.4';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
-  title: '所有者専用メディア変換パネルへ更新',
-  description: 'MP3・MP4変換チャンネルをBot所有者だけが閲覧できる権限構成に固定し、Administrator経由でも他ユーザーが実行できない所有者ID検証を追加しました。MP3の128/320kbps・MP4の720/1080p選択に加え、YouTubeの分離映像・音声を個別取得して確実に結合し、Node.jsによる新しい抽出処理へ対応しています。',
-  target: 'メディア変換パネル / MP3・MP4取得 / チャンネル閲覧権限 / 一時ファイル処理',
-  verification: '提示済みYouTube URLで映像・音声の実取得、720p MP4結合、320kbps MP3出力、DM上限内の生成を確認。全自動テストにも合格しています。',
+  title: 'VCゲストリンクの発行方法を更新',
+  description: '招待パネルから参加先VCを選ぶだけで、ユーザーIDを入力せずに1時間・1回限りのゲストリンクを発行できます。リンクは発行した本人にだけ表示されます。受け取った人が参加した後も、指定VCとそのチャット以外を制限し、通常の入室認証は不要です。',
+  target: '招待パネル（1518034512574025839） / VC限定ゲストリンク',
+  verification: 'Discord公式のロール付与招待仕様を確認し、発行・本人だけへの表示・参加時の制限を含む自動テスト84件に合格。実アカウントでのリンク受け取り・参加確認は未実施です。',
 });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
