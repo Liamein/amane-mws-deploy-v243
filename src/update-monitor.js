@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const UPDATE_LOG_CHANNEL_ID = '1543145283687555183';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const STATE_FILE = new URL('../data/update-monitor.json', import.meta.url);
-const ROOT_FILES = ['package.json', 'package-lock.json', 'Dockerfile', 'Procfile', 'mws.config', '.pc.conf'];
-const SOURCE_DIRECTORIES = ['src', 'assets'];
+const RUNTIME_DIRECTORIES = new Set(['.git', 'data', 'node_modules', '.cache', 'tmp', 'temp']);
 const CONFIG_ENV_KEYS = [
   'DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'COMMAND_OWNER_IDS',
   'BOT_INSTALL_LOG_CHANNEL_ID', 'BOT_DM_LOG_CHANNEL_ID', 'MBTI_WELCOME_CHANNEL_ID',
@@ -37,19 +36,15 @@ async function scanDirectory(path, manifest) {
     throw error;
   }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const relativePath = `${path}/${entry.name}`;
-    if (entry.isDirectory()) await scanDirectory(relativePath, manifest);
-    else if (entry.isFile()) manifest[relativePath] = await hashFile(relativePath);
+    const relativePath = path ? `${path}/${entry.name}` : entry.name;
+    if (entry.isDirectory() && !RUNTIME_DIRECTORIES.has(entry.name)) await scanDirectory(relativePath, manifest);
+    else if (entry.isFile() && !/\.(?:log|tmp)$/i.test(entry.name)) manifest[relativePath] = await hashFile(relativePath);
   }
 }
 
 export async function buildUpdateManifest(env = process.env) {
   const manifest = {};
-  for (const path of ROOT_FILES) {
-    const hash = await hashFile(path);
-    if (hash) manifest[path] = hash;
-  }
-  for (const path of SOURCE_DIRECTORIES) await scanDirectory(path, manifest);
+  await scanDirectory('', manifest);
   // Store only a digest. Tokens and other environment variable values never enter Discord or the state file.
   manifest['@environment'] = sha256(JSON.stringify(CONFIG_ENV_KEYS.map((key) => [key, env[key] ?? null])));
   return manifest;
@@ -59,7 +54,7 @@ export function changedUpdatePaths(previous = {}, current = {}) {
   return [...new Set([...Object.keys(previous), ...Object.keys(current)])]
     .filter((path) => previous[path] !== current[path])
     .sort()
-    .map((path) => path === '@environment' ? '環境変数設定' : path);
+    .map((path) => path === '@environment' ? '環境変数設定' : path === '.env' ? '環境設定ファイル' : path);
 }
 
 async function readState() {
