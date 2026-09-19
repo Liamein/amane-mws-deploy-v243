@@ -1003,12 +1003,26 @@ function buildAssetStoragePanel(settings) {
   };
 }
 
+async function recoverAssetCustomForums(guild, settings) {
+  const panel = guild.channels.cache.get(ASSET_STORAGE_PANEL_CHANNEL_ID);
+  if (!panel?.parentId) return settings;
+  const standardIds = new Set([...Object.values(ASSET_FORUM_DEFAULT_CHANNEL_IDS), ...Object.values(settings.categoryChannelIds || {})]);
+  const discoveredIds = [...guild.channels.cache.values()]
+    .filter((channel) => channel.parentId === panel.parentId && channel.type === ChannelType.GuildForum && !standardIds.has(channel.id))
+    .map((channel) => channel.id);
+  const customForumChannelIds = [...new Set([...(settings.customForumChannelIds || []), ...discoveredIds])];
+  if (customForumChannelIds.length === (settings.customForumChannelIds || []).length) return settings;
+  const updated = assetStorageStore.configure(guild.id, { customForumChannelIds });
+  await assetStorageStore.save();
+  return updated;
+}
+
 async function assetCategoryOptions(guild, settings) {
   const standardOptions = Object.entries(ASSET_CATEGORIES).map(([value, category]) => ({ label: category.label, value, emoji: category.emoji, description: `${category.label}用の保存先を選びます` }));
   // パネルから追加したフォーラムも、通常カテゴリと同じ選択画面から選べるようにする。
   // すでに削除された保存先は候補に出さず、選択後の失敗を防止する。
-  const customOptions = (await Promise.all((settings.customForumChannelIds || []).map(async (forumId) => {
-    const forum = guild.channels.cache.get(forumId) || await guild.channels.fetch(forumId).catch(() => null);
+  const customOptions = (settings.customForumChannelIds || []).map((forumId) => {
+    const forum = guild.channels.cache.get(forumId);
     if (forum?.type !== ChannelType.GuildForum) return null;
     return {
       label: `追加: ${forum.name}`.slice(0, 100),
@@ -1016,7 +1030,7 @@ async function assetCategoryOptions(guild, settings) {
       emoji: '📁',
       description: '追加した保管フォーラムへ保存します',
     };
-  }))).filter(Boolean);
+  }).filter(Boolean);
   return [...standardOptions, ...customOptions].slice(0, 25);
 }
 
@@ -2853,7 +2867,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton() && interaction.customId === 'asset:start') {
       await interaction.deferReply({ ephemeral: true });
       await requireAssetPanelAccess(interaction);
-      const settings = assetStorageStore.get(interaction.guild.id);
+      const settings = await recoverAssetCustomForums(interaction.guild, assetStorageStore.get(interaction.guild.id));
       const options = await assetCategoryOptions(interaction.guild, settings);
       return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x7b61ff).setTitle('🗃️ アセット保存 — 1 / 2').setDescription('保存するカテゴリまたは追加フォーラムを選択してください。')], components: [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('asset:category').setPlaceholder('保存先を選択').addOptions(options))] });
     }
