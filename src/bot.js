@@ -85,21 +85,20 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', '機能要望']);
-const BOT_VERSION = '2.5.0';
+const BOT_VERSION = '2.5.1';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
-  title: '不要なゲーム連携を整理し、Botを安定化',
-  description: 'Steam・Riot・VALORANT・EA・Apex・Tracker・VRChat・Palworld関連のコマンド、定期通信、パネルを撤去し、必要なDiscord機能だけを維持します。',
-  target: 'あまねBotのゲーム連携・更新記録・自動復旧',
-  verification: '構文検証と自動復旧テストを実行し、起動時にDiscordコマンド登録と更新記録送信を行います。',
+  title: '不要な外部連携を削除し、起動時の同期を安定化',
+  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、起動時のDiscordコマンド同期と更新記録に時間制限を追加しました。',
+  target: 'あまねBotのゲーム連携、Discordコマンド、更新記録',
+  verification: '構文・自動復旧テストを実行し、クラウドでHTTP監視、Gateway接続、コマンド同期を確認しました。',
 });
 const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
-// Keep the operational digest next to the game status panel, but as a
-// separately titled message so the two monitoring views stay distinguishable.
+// Keep operational summaries in their dedicated channel.
 const OPERATIONS_DIGEST_CHANNEL_ID = '1543158103330267216';
 const PURCHASE_DAILY_BUTTON_LIMIT = 3;
 const LICENSE_PLANS = Object.freeze({

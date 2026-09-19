@@ -14,6 +14,21 @@ const CONFIG_ENV_KEYS = [
   'DISCORD_GUILD_ID', 'INACTIVITY_AUTOMATION_ENABLED', 'INACTIVITY_EXEMPT_ROLE_IDS',
 ];
 
+async function withTimeout(promise, label, timeoutMs = 15_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} が ${timeoutMs / 1_000} 秒以内に完了しませんでした。`)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -86,7 +101,7 @@ export function createUpdateMonitor(discord, { version, release, intervalMs = 60
       const previous = await readState();
       if (previous?.fingerprint === fingerprint) return false;
 
-      const channel = await discord.channels.fetch(UPDATE_LOG_CHANNEL_ID);
+      const channel = await withTimeout(discord.channels.fetch(UPDATE_LOG_CHANNEL_ID), '更新記録チャンネルの取得');
       if (!channel?.isTextBased() || !channel?.isSendable()) {
         throw new Error(`更新記録チャンネル ${UPDATE_LOG_CHANNEL_ID} に送信できません。`);
       }
@@ -97,7 +112,7 @@ export function createUpdateMonitor(discord, { version, release, intervalMs = 60
         timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', hour12: false,
       }).format(now).replaceAll('/', '/');
-      await channel.send({
+      await withTimeout(channel.send({
         embeds: [new EmbedBuilder()
           .setColor(0x7b61ff)
           .setTitle(`✅ ${confirmed.title || 'あまねBotを更新しました'}`)
@@ -109,7 +124,7 @@ export function createUpdateMonitor(discord, { version, release, intervalMs = 60
           .setFooter({ text: `アップデート記録 • v${version ?? '未設定'} • ${timestamp}` })
           .setTimestamp(now)],
         allowedMentions: { parse: [] },
-      });
+      }), '更新記録の送信');
       await writeState(manifest, fingerprint);
       console.log(`Bot更新を記録しました (${changes.length} 件)。`);
       return true;
