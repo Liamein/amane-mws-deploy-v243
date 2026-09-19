@@ -2192,6 +2192,7 @@ discord.once(Events.ClientReady, async (client) => {
   await serverSettingsStore.load();
   await client.application.commands.set(globalCommands);
   if (config.discordGuildId) await client.guilds.fetch(config.discordGuildId).then((guild) => guild.commands.set([]));
+  console.log('Discord application commands synchronized.');
   await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
   botUpdateMonitor.start();
   await verificationSettingsStore.load();
