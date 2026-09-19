@@ -30,6 +30,7 @@ import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './ve
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
 import { enforcePrivateApexGuidePermissions, PRIVATE_APEX_GUIDE_CHANNEL_ID, PRIVATE_APEX_GUIDE_OWNER_ID, upsertPrivateApexGuidePanel } from './private-apex-guide.js';
 import { APEX_AUTO_REFRESH_INTERVAL_MS, ApexTracker } from './apex-tracker.js';
+import { createUpdateMonitor } from './update-monitor.js';
 
 const config = loadConfig();
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildInvites, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent];
@@ -94,15 +95,16 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', 'game-status', 'rank', 'rankstart', 'rankend', 'apex-map', 'team', 'apex-panel', '機能要望']);
-const BOT_VERSION = '2.4.4';
+const BOT_VERSION = '2.4.5';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
-  title: 'VCゲストリンクの発行方法を更新',
-  description: '招待パネルから参加先VCを選ぶだけで、ユーザーIDを入力せずに1時間・1回限りのゲストリンクを発行できます。リンクは発行した本人にだけ表示されます。受け取った人が参加した後も、指定VCとそのチャット以外を制限し、通常の入室認証は不要です。',
-  target: '招待パネル（1518034512574025839） / VC限定ゲストリンク',
-  verification: 'Discord公式のロール付与招待仕様を確認し、発行・本人だけへの表示・参加時の制限を含む自動テスト84件に合格。実アカウントでのリンク受け取り・参加確認は未実施です。',
+  title: '更新記録を自動化',
+  description: 'ソース・依存関係・アセット・起動設定・Bot環境設定の変更を検知し、更新記録チャンネルに変更対象を記録します。',
+  target: 'あまね Bot 全機能 / 更新記録チャンネル 1543145283687555183',
+  verification: '変更検出と重複防止を検証し、起動後の送信ログを確認します。',
 });
+const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, summary: BOT_UPDATE_PANEL.description });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
@@ -2582,6 +2584,8 @@ discord.once(Events.ClientReady, async (client) => {
   await mbtiAttemptStore.load();
   await mbtiPanelStore.load();
   await serverSettingsStore.load();
+  await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
+  botUpdateMonitor.start();
   await verificationSettingsStore.load();
   await gameStatusStore.load();
   await valorantPanelStore.load();
