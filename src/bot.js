@@ -25,6 +25,7 @@ import { chooseRandom, formatDuration, parseChoices } from './utils.js';
 import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './verification-settings.js';
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
 import { createUpdateMonitor } from './update-monitor.js';
+import { globalCommands } from './commands.js';
 
 const config = loadConfig();
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildInvites, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent];
@@ -91,7 +92,7 @@ const BOT_UPDATE_PANEL = Object.freeze({
   title: '不要なゲーム連携を整理し、Botを安定化',
   description: 'Steam・Riot・VALORANT・EA・Apex・Tracker・VRChat・Palworld関連のコマンド、定期通信、パネルを撤去し、必要なDiscord機能だけを維持します。',
   target: 'あまねBotのゲーム連携・更新記録・自動復旧',
-  verification: '構文検証と自動復旧テストを実行し、Discord Gateway接続後に更新記録を送信します。',
+  verification: '構文検証と自動復旧テストを実行し、起動時にDiscordコマンド登録と更新記録送信を行います。',
 });
 const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
@@ -2189,6 +2190,8 @@ discord.once(Events.ClientReady, async (client) => {
   await mbtiAttemptStore.load();
   await mbtiPanelStore.load();
   await serverSettingsStore.load();
+  await client.application.commands.set(globalCommands);
+  if (config.discordGuildId) await client.guilds.fetch(config.discordGuildId).then((guild) => guild.commands.set([]));
   await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
   botUpdateMonitor.start();
   await verificationSettingsStore.load();
