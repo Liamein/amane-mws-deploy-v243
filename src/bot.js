@@ -91,7 +91,7 @@ const BOT_UPDATE_PANEL = Object.freeze({
   title: '不要なゲーム連携を整理し、Botを安定化',
   description: 'Steam・Riot・VALORANT・EA・Apex・Tracker・VRChat・Palworld関連のコマンド、定期通信、パネルを撤去し、必要なDiscord機能だけを維持します。',
   target: 'あまねBotのゲーム連携・更新記録・自動復旧',
-  verification: '構文検証、コマンド登録内容、起動・Discord接続、アセット保存先選択を確認しました。',
+  verification: '構文検証と自動復旧テストを実行し、Discord Gateway接続後に更新記録を送信します。',
 });
 const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
