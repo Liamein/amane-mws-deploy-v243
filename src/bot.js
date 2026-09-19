@@ -1008,7 +1008,7 @@ async function assetCategoryOptions(guild, settings) {
   // パネルから追加したフォーラムも、通常カテゴリと同じ選択画面から選べるようにする。
   // すでに削除された保存先は候補に出さず、選択後の失敗を防止する。
   const customOptions = (await Promise.all((settings.customForumChannelIds || []).map(async (forumId) => {
-    const forum = await guild.channels.fetch(forumId).catch(() => null);
+    const forum = guild.channels.cache.get(forumId) || await guild.channels.fetch(forumId).catch(() => null);
     if (forum?.type !== ChannelType.GuildForum) return null;
     return {
       label: `追加: ${forum.name}`.slice(0, 100),
