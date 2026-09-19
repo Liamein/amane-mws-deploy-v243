@@ -9,12 +9,9 @@ import { InstallConsentStore } from './install-consents.js';
 import { InviteAccessStore } from './invite-access.js';
 import { InvitePanel, VANITY_URL } from './invite-panel.js';
 import { GuestAccess } from './guest-access.js';
-import { buildGameStatusEmbed, buildGameStatusPanel, upsertGameStatusPanel } from './game-status-panel.js';
-import { createCrosshairPreview } from './crosshair-preview.js';
 import { ActivityStore, DAY_MS, INACTIVITY_KICK_DAYS, INACTIVITY_WARNING_DAYS, isInactivityKickDue, reachedInactivityDay } from './activity.js';
 import { VoiceMuteGuard } from './voice-mute-guard.js';
 import { loadConfig } from './config.js';
-import { GAME_STATUS_INTERVAL_MS, GameStatusStore, summarizeOfficialText, summarizeStatuspage, unavailableGameStatus } from './game-status.js';
 import { findModerationViolation, ModerationStore, normalizedMessage } from './moderation.js';
 import { calculateMbti, MBTI_QUESTIONS, MBTI_TYPES, mbtiRoleName, mbtiType } from './mbti.js';
 import { MBTI_DAILY_LIMIT, MbtiAttemptStore, tokyoDay } from './mbti-attempts.js';
@@ -25,11 +22,8 @@ import { PurchaseTicketStore } from './purchase-tickets.js';
 import { ServerSettingsStore } from './server-settings.js';
 import { retryRecoverable, shouldRecoverGateway, shouldRunMaintenance } from './self-healing.js';
 import { chooseRandom, formatDuration, parseChoices } from './utils.js';
-import { agentIconUrl, formatRiotId, ValorantPanelStore } from './valorant-panels.js';
 import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './verification-settings.js';
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
-import { enforcePrivateApexGuidePermissions, PRIVATE_APEX_GUIDE_CHANNEL_ID, PRIVATE_APEX_GUIDE_OWNER_ID, upsertPrivateApexGuidePanel } from './private-apex-guide.js';
-import { APEX_AUTO_REFRESH_INTERVAL_MS, ApexTracker } from './apex-tracker.js';
 import { createUpdateMonitor } from './update-monitor.js';
 
 const config = loadConfig();
@@ -52,9 +46,6 @@ const mbtiAttemptStore = new MbtiAttemptStore(new URL('../data/mbti-attempts.jso
 const mbtiPanelStore = new MbtiPanelStore(new URL('../data/mbti-panels.json', import.meta.url));
 const verificationSettingsStore = new VerificationSettingsStore(new URL('../data/verification-settings.json', import.meta.url));
 const serverSettingsStore = new ServerSettingsStore(new URL('../data/server-settings.json', import.meta.url));
-const gameStatusStore = new GameStatusStore(new URL('../data/game-status.json', import.meta.url));
-const valorantPanelStore = new ValorantPanelStore(new URL('../data/valorant-panels.json', import.meta.url));
-const apexTracker = new ApexTracker(new URL('../data/apex-tracker.json', import.meta.url));
 const verificationChallenges = new Map();
 const mbtiSessions = new Map();
 const messageHistory = new Map();
@@ -63,14 +54,12 @@ const voiceMuteDisconnecting = new Set();
 const inactivityKickContexts = new Set();
 const forumUploadsInFlight = new Set();
 let inactivityTimer;
-let gameStatusTimer;
 let dmHistoryTimer;
 let voiceMuteTimer;
 let licenseTimer;
 let panelRepairTimer;
 let operationsDigestTimer;
 let selfHealingTimer;
-let apexTrackerTimer;
 const selfHealingState = {
   inFlight: new Set(),
   lastCacheCleanupAt: 0,
@@ -94,17 +83,17 @@ const MBTI_CUSTOM_EMOJIS = {
   cheer: '<a:hanyaCheer:1538143940484534322>',
   welcome: '<a:nekolove:1517284982257877184>',
 };
-const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', 'game-status', 'rank', 'rankstart', 'rankend', 'apex-map', 'team', 'apex-panel', '機能要望']);
-const BOT_VERSION = '2.4.5';
+const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', '機能要望']);
+const BOT_VERSION = '2.5.0';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
-  title: '更新記録を自動化',
-  description: 'ソース・依存関係・アセット・起動設定・Bot環境設定の変更を検知し、更新記録チャンネルに変更対象を記録します。',
-  target: 'あまね Bot 全機能 / 更新記録チャンネル 1543145283687555183',
-  verification: '変更検出と重複防止を検証し、起動後の送信ログを確認します。',
+  title: '不要なゲーム連携を整理し、Botを安定化',
+  description: 'Steam・Riot・VALORANT・EA・Apex・Tracker・VRChat・Palworld関連のコマンド、定期通信、パネルを撤去し、必要なDiscord機能だけを維持します。',
+  target: 'あまねBotのゲーム連携・更新記録・自動復旧',
+  verification: '構文検証、コマンド登録内容、起動・Discord接続、アセット保存先選択を確認しました。',
 });
-const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, summary: BOT_UPDATE_PANEL.description });
+const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
@@ -135,12 +124,6 @@ const INVITE_ACCESS_ROLE_NAME = '購入チャンネル閲覧｜招待限定';
 const USAGE_ACCESS_INVITE_URL = 'https://discord.gg/DYjtfBm2ec';
 const ASSET_STORAGE_PANEL_CHANNEL_ID = '1543393706537918585';
 const ASSET_STORAGE_CATEGORY_ID = '1543393587616817162';
-const GAME_DEFINITIONS = [
-  { id: 'valorant', name: 'VALORANT', statusUrl: 'https://status.riotgames.com/?locale=ja_JP&product=valorant', statusApiUrl: 'https://valorant.secure.dyn.riotcdn.net/channels/public/x/status/ap.json', sourceType: 'riot-json' },
-  { id: 'apex', name: 'Apex Legends', statusUrl: 'https://help.ea.com/en/server-status/', statusApiUrl: 'https://help.ea.com/_data/server-status/v1/server-statuses', sourceType: 'ea-json' },
-  { id: 'overwatch', name: 'Overwatch 2', envUrl: 'OVERWATCH_STATUS_URL', sourceUrl: 'https://x.com/BlizzardCS' },
-  { id: 'vrchat', name: 'VRChat', statusUrl: 'https://status.vrchat.com/api/v2/summary.json' },
-];
 
 function requirePermission(interaction, permission) {
   if (!interaction.memberPermissions?.has(permission)) throw new Error('この操作を実行する権限がありません。');
@@ -1424,125 +1407,6 @@ function validateOptionalHttpsUrl(value, label) {
   return url.toString();
 }
 
-function buildCrosshairDetailEmbed(crosshair) {
-  const embed = new EmbedBuilder().setColor(0xff4655).setTitle(`🎯 ${crosshair.name}`).setDescription(crosshair.description)
-    .addFields(
-      { name: 'クロスヘアコード', value: `\`\`\`${crosshair.code.slice(0, 1_000)}\`\`\`` },
-      { name: '作者・出典', value: crosshair.author, inline: true },
-      { name: 'カラー', value: crosshair.color, inline: true },
-      { name: '分類', value: crosshair.category, inline: true },
-      { name: 'ID', value: `\`${crosshair.id}\``, inline: true },
-    ).setFooter({ text: 'VALORANTのクロスヘア設定 → コードをインポート から貼り付けてください。' });
-  if (crosshair.imageUrl) embed.setImage(crosshair.imageUrl);
-  return embed;
-}
-
-function buildCrosshairPanel(guildId, page = 0) {
-  const settings = valorantPanelStore.getGuild(guildId);
-  const crosshairs = valorantPanelStore.listCrosshairs();
-  const pageSize = 10;
-  const maxPage = Math.max(0, Math.ceil(crosshairs.length / pageSize) - 1);
-  const safePage = Math.min(Math.max(0, page), maxPage);
-  const pageItems = crosshairs.slice(safePage * pageSize, (safePage + 1) * pageSize);
-  const description = crosshairs.length
-    ? `${settings.crosshairDescription}\n\n**登録数: ${crosshairs.length}件** — 下の一覧から選ぶと、コードを自分だけに表示します。`
-    : `${settings.crosshairDescription}\n\nまだクロスヘアは登録されていません。管理者は \`/crosshair add\` で追加できます。`;
-  const embed = new EmbedBuilder().setColor(0xff4655).setTitle(settings.crosshairTitle).setDescription(description)
-    .addFields({ name: crosshairs.length ? `クロスヘア一覧（${safePage + 1}/${maxPage + 1}ページ）` : 'クロスヘア一覧', value: pageItems.length ? pageItems.map((crosshair, index) => `**${safePage * pageSize + index + 1}. ${crosshair.name}** — ${crosshair.category} / ${crosshair.color}\n作者: ${crosshair.author}　ID: \`${crosshair.id}\``).join('\n') : '登録されたクロスヘアはありません。' })
-    .setFooter({ text: 'クロスヘアの登録・編集・削除はBot所有者のみ実行できます。' });
-  const components = [];
-  if (pageItems.length) {
-    const selector = new StringSelectMenuBuilder()
-      .setCustomId('crosshair:select')
-      .setPlaceholder('クロスヘアを選択してコードを表示')
-      .addOptions(pageItems.map((crosshair) => ({
-        label: crosshair.name.slice(0, 100),
-        description: `${crosshair.category} / ${crosshair.color}`.slice(0, 100),
-        value: crosshair.id,
-      })));
-    components.push(new ActionRowBuilder().addComponents(selector));
-  }
-  components.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`crosshair:page:${safePage - 1}`).setLabel('前へ').setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
-    new ButtonBuilder().setCustomId(`crosshair:page:${safePage + 1}`).setLabel('次へ').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= maxPage),
-    new ButtonBuilder().setCustomId('crosshair:random').setLabel('ランダム表示').setStyle(ButtonStyle.Primary).setEmoji('🎲').setDisabled(!crosshairs.length),
-  ));
-  return { embeds: [embed], components };
-}
-
-function buildValorantPlayerEmbed({ riotId, agent = null, title = 'VALORANT プレイヤー' }) {
-  const embed = new EmbedBuilder().setColor(0xff4655).setTitle(title).setDescription(`**${riotId}**`);
-  if (agent) {
-    embed.addFields({ name: 'エージェント', value: agent, inline: true });
-    const icon = agentIconUrl(agent);
-    if (icon) embed.setThumbnail(icon);
-  }
-  return embed;
-}
-
-function buildValorantTrackerPanel(guildId) {
-  const settings = valorantPanelStore.getGuild(guildId);
-  return {
-    embeds: [new EmbedBuilder().setColor(0xff4655).setTitle(settings.trackerTitle).setDescription(`${settings.trackerDescription}\n\n戦績・試合履歴・ライブマッチは、Riot公式の製品承認とプレイヤー本人のRiot連携が完了したアカウントのみ表示します。`).addFields(
-      { name: '戦績・試合履歴', value: 'Riot IDを入力して確認します。' },
-      { name: '自分の戦績', value: '連携済みのDiscordアカウントとして確認します。' },
-      { name: 'ライブマッチ', value: '進行中の試合に限り、連携・権限範囲内で味方／敵を表示します。エージェントはミニアイコンで表示します。' },
-    ).setFooter({ text: '未連携またはRiot API未承認のデータは表示しません。' })],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('valorant:me').setLabel('自分の戦績').setStyle(ButtonStyle.Success).setEmoji('📈'),
-      new ButtonBuilder().setCustomId('valorant:player').setLabel('プレイヤー戦績').setStyle(ButtonStyle.Primary).setEmoji('🔎'),
-      new ButtonBuilder().setCustomId('valorant:live').setLabel('ライブマッチ').setStyle(ButtonStyle.Secondary).setEmoji('🎮'),
-    )],
-  };
-}
-
-function buildValorantConnectionRequiredEmbed(riotId, kind) {
-  return buildValorantPlayerEmbed({ riotId, title: `🔒 ${kind}を表示できません` })
-    .setDescription(`**${riotId}**\n\nこの機能はRiot公式のProduction API承認と、対象プレイヤー本人によるRiot Sign On連携が必要です。現在は未連携のため、データを取得・表示していません。`)
-    .addFields({ name: '必要な準備', value: '1. Riot Developer Portalで「あまね」の製品申請を承認\n2. DiscordアカウントごとにRiot Sign Onで連携・データ共有へ同意\n3. 承認済みのAPIキーをBotの安全な環境変数へ設定' });
-}
-
-
-function buildCustomCrosshairPanel(crosshair) {
-  const filename = `${crosshair.id}.png`;
-  const image = crosshair.imagePath
-    ? new AttachmentBuilder(crosshair.imagePath, { name: filename })
-    : new AttachmentBuilder(createCrosshairPreview(crosshair.code), { name: filename });
-  const embed = new EmbedBuilder().setColor(0x7b61ff).setTitle(`<a:Kirby_Jam:1538144194160369664> 🎯 ${crosshair.name}`.slice(0, 256))
-    .setDescription('╭─ **VALORANT クロスヘア** ─╮\nプレビューとインポート用コード\n╰──────────────────╯')
-    .setImage(`attachment://${filename}`)
-    .addFields({ name: '<a:CBuwu:1519043206203965440> コード', value: `\`\`\`diff\n${crosshair.code.slice(0, 1_000)}\n\`\`\`` })
-    .setFooter({ text: 'あまね • コードは上の表示からコピーできます' });
-  // Empty components explicitly removes any controls left on an older version of this panel.
-  return { embeds: [embed], files: [image], components: [] };
-}
-
-async function syncCustomCrosshairs() {
-  if (!config.valorantCrosshairChannelId) return;
-  const catalogUrl = new URL('../data/custom-crosshairs.json', import.meta.url);
-  const postsUrl = new URL('../data/custom-crosshair-posts.json', import.meta.url);
-  let entries;
-  try {
-    entries = JSON.parse(await readFile(catalogUrl, 'utf8'));
-  } catch (error) {
-    if (error.code === 'ENOENT') return;
-    throw error;
-  }
-  if (!Array.isArray(entries) || !entries.length) return;
-  const channel = await getTextChannel(config.valorantCrosshairChannelId);
-  if (!channel?.isSendable()) throw new Error('カスタムクロスヘアの投稿先チャンネルが利用できません。');
-  let posts = {};
-  try { posts = JSON.parse(await readFile(postsUrl, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  for (const entry of entries) {
-    if (!entry.id || !entry.name || !entry.code) throw new Error('カスタムクロスヘアの名前・ID・コードを設定してください。');
-    const oldMessage = posts[entry.id] && await channel.messages.fetch(posts[entry.id]).catch(() => null);
-    const message = oldMessage ? await oldMessage.edit(buildCustomCrosshairPanel(entry)) : await channel.send(buildCustomCrosshairPanel(entry));
-    posts = { ...posts, [entry.id]: message.id };
-    await writeFile(postsUrl, JSON.stringify(posts, null, 2), 'utf8');
-  }
-}
-
-
 async function writeMemberLog(member, joined) {
   const settings = serverSettingsStore.get(member.guild.id);
   if (!settings.memberLogChannelId) return;
@@ -1612,25 +1476,6 @@ async function completeVerification(interaction, challenge) {
 // that case; external servers are still excluded.
 function tracksGuild(guild) {
   return Boolean(guild) && (guild.id === config.discordGuildId || guild.id === AMA_GUILD_ID);
-}
-
-async function ensurePrivateApexGuidePanel(guild) {
-  if (guild.id !== AMA_GUILD_ID) return { recreated: false, skipped: true };
-  const channel = guild.channels.cache.get(PRIVATE_APEX_GUIDE_CHANNEL_ID)
-    || await guild.channels.fetch(PRIVATE_APEX_GUIDE_CHANNEL_ID).catch(() => null);
-  if (!channel?.isTextBased() || !channel.isSendable()) throw new Error('所有者専用の案内チャンネルに送信できません。');
-  if (channel.guildId !== guild.id) throw new Error('所有者専用の案内チャンネルが対象サーバーにありません。');
-  const botMember = guild.members.me || await guild.members.fetchMe();
-  if (!channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageChannels)) throw new Error('非公開チャンネルを保護するための「チャンネルを管理」権限がBotにありません。');
-
-  await enforcePrivateApexGuidePermissions(channel, { ownerId: PRIVATE_APEX_GUIDE_OWNER_ID, botId: discord.user.id });
-  const settings = serverSettingsStore.get(guild.id);
-  const result = await upsertPrivateApexGuidePanel(channel, settings.privateApexGuideMessageId, discord.user.id);
-  if (settings.privateApexGuideMessageId !== result.message.id) {
-    serverSettingsStore.setPrivateApexGuidePanel(guild.id, result.message.id);
-    await serverSettingsStore.save();
-  }
-  return result;
 }
 
 function formatLicenseExpiry(expiresAt) {
@@ -1713,31 +1558,6 @@ async function repairManagedPanels() {
       return 'recreated';
     });
 
-    if (tracksGuild(guild)) {
-      const settings = serverSettingsStore.get(guild.id);
-      if (settings.gameStatusPanelChannelId || settings.gameStatusChannelId) await inspect(async () => {
-        const statuses = Object.values(gameStatusStore.statuses || {});
-        if (!statuses.length) return false;
-        const before = settings.gameStatusPanelMessageId;
-        await ensureGameStatusPanel(guild, statuses);
-        return serverSettingsStore.get(guild.id).gameStatusPanelMessageId !== before ? 'recreated' : 'updated';
-      });
-      if (guild.id === AMA_GUILD_ID) await inspect(async () => ((await ensurePrivateApexGuidePanel(guild)).recreated ? 'recreated' : 'updated'));
-    }
-
-    const valorant = valorantPanelStore.getGuild(guild.id);
-    for (const type of ['crosshairs', 'tracker']) {
-      const channelKey = type === 'crosshairs' ? 'crosshairPanelChannelId' : 'trackerPanelChannelId';
-      const messageKey = type === 'crosshairs' ? 'crosshairPanelMessageId' : 'trackerPanelMessageId';
-      if (!valorant[channelKey]) continue;
-      await inspect(async () => {
-        const channel = await getTextChannel(valorant[channelKey]);
-        if (!channel?.isSendable()) throw new Error(`VALORANT${type === 'crosshairs' ? 'クロスヘア' : '戦績'}パネルの投稿先を利用できません。`);
-        const existing = valorant[messageKey] && await fetchOwnedPanelMessage(channel, valorant[messageKey]);
-        await postValorantPanel(guild, channel, type);
-        return existing ? 'updated' : 'recreated';
-      });
-    }
   }
   const mainGuild = discord.guilds.cache.get(config.discordGuildId) || discord.guilds.cache.get(AMA_GUILD_ID);
   if (mainGuild) {
@@ -2068,158 +1888,15 @@ async function runInactivityCheck(guild) {
   if (changed) await activityStore.save();
 }
 
-function optionalHttpsUrl(name) {
-  const value = process.env[name]?.trim();
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' ? url.toString() : null;
-  } catch {
-    console.warn(`${name} は有効な HTTPS URL ではありません。`);
-    return null;
-  }
-}
-
-async function fetchStatuspage(game, url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return summarizeStatuspage(game, await response.json(), url);
-}
-
-async function fetchOfficialHtml(game, url, sourceType) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const text = (await response.text()).replaceAll(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>/gi, ' ').replaceAll(/&nbsp;|&#160;/gi, ' ');
-  if (sourceType === 'ea-public') return summarizeOfficialText(game, text, url, {
-    gameName: 'Apex Legends',
-    healthyPattern: /\bonline\b/,
-    maintenancePattern: /\bmaintenance\b|メンテナンス/,
-    outagePattern: /\boffline\b|\boutage\b|\bdown\b|接続問題/,
-  });
-  return summarizeOfficialText(game, text, url, {
-    gameName: 'VALORANT',
-    healthyPattern: /no recent issues or events to report|現在、問題は報告されていません|現在の問題はありません/,
-    maintenancePattern: /maintenance|メンテナンス/,
-    outagePattern: /outage|disruption|degraded|unavailable|障害|接続問題/,
-  });
-}
-
-async function fetchRiotPublicStatus(game) {
-  const response = await fetch(game.statusApiUrl, { signal: AbortSignal.timeout(30_000), headers: { 'User-Agent': 'AmA-Community-Bot/1.4 (Discord game-status panel)' } });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const status = await response.json();
-  const incidents = [...(status.incidents || []), ...(status.maintenances || [])];
-  const detail = incidents.slice(0, 2).map((incident) => incident.updates?.[0]?.translations?.find((translation) => translation.locale === 'ja_JP')?.content || incident.updates?.[0]?.translations?.[0]?.content || incident.titles?.find((title) => title.locale === 'ja_JP')?.content || incident.titles?.[0]?.content).filter(Boolean).join('\n');
-  return {
-    id: game.id,
-    name: game.name,
-    state: status.maintenances?.length ? 'maintenance' : status.incidents?.length ? 'degraded' : 'operational',
-    detail: detail || '公式情報では、現在アジア太平洋地域の障害・メンテナンスは報告されていません。',
-    sourceUrl: game.statusUrl,
-  };
-}
-
-async function fetchEaPublicStatus(game) {
-  const response = await fetch(game.statusApiUrl, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const status = (await response.json())?.response?.['apex-legends'];
-  const state = status === 'Online' ? 'operational'
-    : status === 'Some Issues' ? 'degraded'
-      : status === 'Scheduled Maintenance' ? 'maintenance'
-        : status === 'Server Outage' ? 'major' : 'unknown';
-  const detail = state === 'operational' ? 'EA公式情報では正常稼働と表示されています。'
-    : state === 'degraded' ? 'EA公式情報では一部の問題が報告されています。'
-      : state === 'maintenance' ? 'EA公式情報ではメンテナンスが案内されています。'
-        : state === 'major' ? 'EA公式情報ではサーバー障害が案内されています。'
-          : 'EA公式情報から現在の状態を確定できませんでした。公式ページを確認してください。';
-  return { id: game.id, name: game.name, state, detail, sourceUrl: game.statusUrl };
-}
-
-async function getGameStatuses() {
-  return Promise.all(GAME_DEFINITIONS.map(async (game) => {
-    try {
-      if (game.sourceType === 'riot-json') return await fetchRiotPublicStatus(game);
-      if (game.sourceType === 'ea-json') return await fetchEaPublicStatus(game);
-      if (game.sourceType) return await fetchOfficialHtml(game, game.statusUrl, game.sourceType);
-      const statusUrl = game.statusUrl || optionalHttpsUrl(game.envUrl);
-      if (!statusUrl) return unavailableGameStatus(game, 'Blizzardはゲーム別の公開ステータスAPIを提供していないため、公式サポート情報を確認してください。', game.sourceUrl);
-      return await fetchStatuspage(game, statusUrl);
-    } catch (error) {
-      console.warn(`${game.name} の状態取得に失敗:`, error.message);
-      return unavailableGameStatus(game, '状態取得に失敗しました。次回の自動確認で再試行します。', game.sourceUrl || game.statusUrl || null);
-    }
-  }));
-}
-
-let gameStatusRefresh;
-function monitorGameStatus() {
-  if (gameStatusRefresh) return gameStatusRefresh;
-  gameStatusRefresh = (async () => {
-    const statuses = await getGameStatuses();
-    for (const status of statuses) gameStatusStore.set(status);
-    await gameStatusStore.save();
-    for (const guild of discord.guilds.cache.values()) await ensureGameStatusPanel(guild, statuses).catch((error) => console.warn(`ゲーム状態パネル更新に失敗しました (${guild.name}):`, error.message));
-    return statuses;
-  })().finally(() => { gameStatusRefresh = null; });
-  return gameStatusRefresh;
-}
-
-async function ensureGameStatusPanel(guild, statuses) {
-  if (!tracksGuild(guild)) return;
-  const settings = serverSettingsStore.get(guild.id);
-  const channelId = settings.gameStatusPanelChannelId || settings.gameStatusChannelId || settings.updateChannelId;
-  const channel = channelId && await getTextChannel(channelId);
-  if (!channel?.isSendable()) return;
-  const message = await upsertGameStatusPanel(channel, settings.gameStatusPanelMessageId, discord.user.id, statuses);
-  serverSettingsStore.setGameStatusPanel(guild.id, channel.id, message.id);
-  await serverSettingsStore.save();
-}
-
-async function postGameStatusPanel(guild, channel) {
-  const statuses = await getGameStatuses();
-  const settings = serverSettingsStore.get(guild.id);
-  const message = await upsertGameStatusPanel(channel, settings.gameStatusPanelChannelId === channel.id ? settings.gameStatusPanelMessageId : null, discord.user.id, statuses);
-  serverSettingsStore.setGameStatusPanel(guild.id, channel.id, message.id);
-  await serverSettingsStore.save();
-  return message;
-}
-
-async function postValorantPanel(guild, channel, type) {
-  const settings = valorantPanelStore.getGuild(guild.id);
-  const keys = type === 'crosshairs'
-    ? { channelId: 'crosshairPanelChannelId', messageId: 'crosshairPanelMessageId', build: () => buildCrosshairPanel(guild.id) }
-    : { channelId: 'trackerPanelChannelId', messageId: 'trackerPanelMessageId', build: () => buildValorantTrackerPanel(guild.id) };
-  if (settings[keys.channelId] === channel.id && settings[keys.messageId]) {
-    const existing = await channel.messages.fetch(settings[keys.messageId]).catch(() => null);
-    if (existing) {
-      await existing.edit(keys.build());
-      return existing;
-    }
-  }
-  const message = await channel.send(keys.build());
-  valorantPanelStore.updateGuild(guild.id, { [keys.channelId]: channel.id, [keys.messageId]: message.id });
-  await valorantPanelStore.save();
-  return message;
-}
-
-async function refreshCrosshairPanel(guildId) {
-  const settings = valorantPanelStore.getGuild(guildId);
-  if (!settings.crosshairPanelChannelId || !settings.crosshairPanelMessageId) return;
-  const channel = await getTextChannel(settings.crosshairPanelChannelId);
-  const message = channel && await channel.messages.fetch(settings.crosshairPanelMessageId).catch(() => null);
-  if (message) await message.edit(buildCrosshairPanel(guildId));
-}
-
 async function handleCommand(interaction) {
   const accessLevel = commandAccessLevel(interaction);
   const { commandName } = interaction;
   if (commandName === 'help') {
     const commands = accessLevel === 'owner'
-      ? '🧭 **確認**　`/ping` `/uptime` `/user` `/game-status`\n🔺 **Apex**　`/rank` `/rankstart` `/rankend` `/apex-map` `/team`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config` `/inactivity-status`\n✨ **パネル**　`/apex-panel` `/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config` `/bot-update-config` `/game-status-config` `/game-status-panel`'
-      : '🧭 **確認コマンド**　`/ping` `/uptime` `/user` `/game-status`\n🔺 **Apex**　`/rank` `/rankstart` `/rankend` `/apex-map` `/team`\n✨ **管理権限がある場合**　`/apex-panel`';
-    return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 あまね・コマンドガイド').setDescription(`╭─ **使えるコマンド** ─╮\n${commands}\n╰────────────────╯\n\n${accessLevel === 'owner' ? '✅ あなたは登録管理者です。すべてのコマンドを利用できます。' : '🔐 登録済みユーザーは確認系・Apexコマンドを利用できます。'}`).setFooter({ text: '各コマンドを選ぶと日本語の入力説明が表示されます。' })] });
+      ? '🧭 **確認**　`/ping` `/uptime` `/user`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config` `/inactivity-status`\n✨ **パネル**　`/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config` `/bot-update-config`'
+      : '🧭 **確認コマンド**　`/ping` `/uptime` `/user`';
+    return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 あまね・コマンドガイド').setDescription(`╭─ **使えるコマンド** ─╮\n${commands}\n╰────────────────╯\n\n${accessLevel === 'owner' ? '✅ あなたは登録管理者です。すべてのコマンドを利用できます。' : '🔐 登録済みユーザーは確認系コマンドを利用できます。'}`).setFooter({ text: '各コマンドを選ぶと日本語の入力説明が表示されます。' })] });
   }
-  if (apexTracker.handlesCommand(commandName)) return apexTracker.handleCommand(interaction, discord);
   if (commandName === 'command-access') {
     requirePrimaryBotOwner(interaction);
     const subcommand = interaction.options.getSubcommand();
@@ -2317,7 +1994,7 @@ async function handleCommand(interaction) {
     await writeManagementDmLog(interaction, user);
     return interaction.reply({ ephemeral: true, content: `✅ ${user} にDMを送信しました。` });
   }
-  if (commandName === 'server-log-config' || commandName === 'bot-update-config' || commandName === 'game-status-config') {
+  if (commandName === 'server-log-config' || commandName === 'bot-update-config') {
     if (commandName === 'bot-update-config') requirePrimaryBotOwner(interaction);
     requirePermission(interaction, PermissionFlagsBits.ManageGuild);
     const channel = interaction.options.getChannel('channel', true);
@@ -2326,13 +2003,6 @@ async function handleCommand(interaction) {
       serverSettingsStore.setMemberLogChannel(interaction.guild.id, channel.id);
       await serverSettingsStore.save();
       return interaction.reply({ ephemeral: true, content: `✅ 入退室ログを ${channel} に記録します。` });
-    }
-    if (commandName === 'game-status-config') {
-      await interaction.deferReply({ ephemeral: true });
-      serverSettingsStore.setGameStatusChannel(interaction.guild.id, channel.id);
-      await serverSettingsStore.save();
-      await postGameStatusPanel(interaction.guild, channel);
-      return interaction.editReply({ content: `✅ 状態パネルを ${channel} に設定しました。5分ごとに同じパネルを更新し、状態変化の個別ログは投稿しません。` });
     }
     serverSettingsStore.setUpdateChannel(interaction.guild.id, channel.id);
     await serverSettingsStore.save();
@@ -2458,82 +2128,6 @@ async function handleCommand(interaction) {
     await message.edit(buildRecruitmentPanel(updated));
     return interaction.reply({ ephemeral: true, content: `✅ 募集パネル \`${updated.id}\` を更新しました。` });
   }
-  if (commandName === 'game-status') {
-    await interaction.deferReply({ ephemeral: true });
-    return interaction.editReply({ embeds: [buildGameStatusEmbed(await getGameStatuses())] });
-  }
-  if (commandName === 'game-status-panel') {
-    requirePermission(interaction, PermissionFlagsBits.ManageGuild);
-    const channel = interaction.options.getChannel('channel') || interaction.channel;
-    if (!channel?.isTextBased() || !channel.isSendable()) throw new Error('投稿先には、Botが送信できるテキストチャンネルを指定してください。');
-    await interaction.deferReply({ ephemeral: true });
-    const message = await postGameStatusPanel(interaction.guild, channel);
-    return interaction.editReply({ content: `✅ ゲームサービス状態パネルを ${channel} に設置・更新しました。5分ごとに更新されます。\nメッセージID: \`${message.id}\`` });
-  }
-  if (commandName === 'valorant-panel') {
-    requirePermission(interaction, PermissionFlagsBits.ManageGuild);
-    const subcommand = interaction.options.getSubcommand();
-    const type = interaction.options.getString('type', true);
-    if (subcommand === 'post') {
-      const channel = interaction.options.getChannel('channel') || interaction.channel;
-      if (!channel?.isTextBased() || !channel.isSendable()) throw new Error('投稿先には、Botが送信できるテキストチャンネルを指定してください。');
-      const message = await postValorantPanel(interaction.guild, channel, type);
-      return interaction.reply({ ephemeral: true, content: `✅ ${type === 'crosshairs' ? 'クロスヘア' : '戦績・ライブマッチ'}パネルを ${channel} に作成・更新しました。\nメッセージID: \`${message.id}\`` });
-    }
-    const title = interaction.options.getString('title');
-    const description = interaction.options.getString('description');
-    if (!title && !description) throw new Error('見出しか本文のどちらかを入力してください。');
-    const patch = type === 'crosshairs'
-      ? { crosshairTitle: title, crosshairDescription: description }
-      : { trackerTitle: title, trackerDescription: description };
-    valorantPanelStore.updateGuild(interaction.guild.id, patch);
-    await valorantPanelStore.save();
-    const settings = valorantPanelStore.getGuild(interaction.guild.id);
-    const channelId = type === 'crosshairs' ? settings.crosshairPanelChannelId : settings.trackerPanelChannelId;
-    const messageId = type === 'crosshairs' ? settings.crosshairPanelMessageId : settings.trackerPanelMessageId;
-    const channel = channelId && await getTextChannel(channelId);
-    const message = channel && messageId && await channel.messages.fetch(messageId).catch(() => null);
-    if (message) await message.edit(type === 'crosshairs' ? buildCrosshairPanel(interaction.guild.id) : buildValorantTrackerPanel(interaction.guild.id));
-    return interaction.reply({ ephemeral: true, content: `✅ ${type === 'crosshairs' ? 'クロスヘア' : '戦績・ライブマッチ'}パネルの表示文を更新しました。${message ? '投稿済みパネルにも反映しました。' : 'まだパネル未投稿のため、`/valorant-panel post` で投稿してください。'}` });
-  }
-  if (commandName === 'crosshair') {
-    requirePermission(interaction, PermissionFlagsBits.ManageGuild);
-    const subcommand = interaction.options.getSubcommand();
-    if (subcommand === 'list') {
-      const entries = valorantPanelStore.listCrosshairs();
-      return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0xff4655).setTitle('🎯 登録済みクロスヘア').setDescription(entries.length ? entries.map((entry) => `• **${entry.name}** — \`${entry.id}\` (${entry.category} / ${entry.color})`).join('\n').slice(0, 4_000) : 'まだ登録されていません。')] });
-    }
-    const id = interaction.options.getString('id');
-    if (subcommand === 'remove') {
-      if (!valorantPanelStore.removeCrosshair(id)) throw new Error('指定されたクロスヘアが見つかりません。');
-      await valorantPanelStore.save();
-      await refreshCrosshairPanel(interaction.guild.id);
-      return interaction.reply({ ephemeral: true, content: '✅ クロスヘアを削除し、投稿済みパネルを更新しました。' });
-    }
-    const imageUrl = interaction.options.getString('image-url');
-    const data = {
-      name: interaction.options.getString('name'),
-      code: interaction.options.getString('code'),
-      author: interaction.options.getString('author'),
-      color: interaction.options.getString('color'),
-      category: interaction.options.getString('category'),
-      description: interaction.options.getString('description'),
-      imageUrl: imageUrl ? validateOptionalHttpsUrl(imageUrl, 'プレビュー画像') : undefined,
-    };
-    const crosshair = subcommand === 'add'
-      ? valorantPanelStore.createCrosshair(data)
-      : valorantPanelStore.updateCrosshair(id, data);
-    if (!crosshair) throw new Error('指定されたクロスヘアが見つかりません。');
-    await valorantPanelStore.save();
-    await refreshCrosshairPanel(interaction.guild.id);
-    return interaction.reply({ ephemeral: true, content: `✅ クロスヘア **${crosshair.name}** を${subcommand === 'add' ? '登録' : '更新'}しました。ID: \`${crosshair.id}\``, embeds: [buildCrosshairDetailEmbed(crosshair)] });
-  }
-  if (commandName === 'valorant') {
-    const subcommand = interaction.options.getSubcommand();
-    if (subcommand === 'me') return interaction.reply({ ephemeral: true, embeds: [buildValorantConnectionRequiredEmbed(interaction.user.username, '自分の戦績')] });
-    const riotId = formatRiotId(interaction.options.getString('riot-id', true));
-    return interaction.reply({ ephemeral: true, embeds: [buildValorantConnectionRequiredEmbed(riotId, subcommand === 'live' ? 'ライブマッチ' : '戦績・試合履歴')] });
-  }
   if (commandName === 'inactivity-status') {
     requirePermission(interaction, PermissionFlagsBits.ManageGuild);
     const user = interaction.options.getUser('member', true);
@@ -2598,9 +2192,6 @@ discord.once(Events.ClientReady, async (client) => {
   await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
   botUpdateMonitor.start();
   await verificationSettingsStore.load();
-  await gameStatusStore.load();
-  await valorantPanelStore.load();
-  await apexTracker.load();
   await guestAccess.start().catch((error) => reportRuntimeError('VC限定ゲスト機能の初期設定', error));
   await invitePanel.start().catch((error) => reportRuntimeError('招待パネルの初期設定', error));
   const initialPanelRepair = await repairManagedPanels();
@@ -2621,13 +2212,6 @@ discord.once(Events.ClientReady, async (client) => {
   }
   for (const guild of client.guilds.cache.values()) await createExternalInstallConsent(guild).catch((error) => console.error(`外部サーバーの同意UI投稿に失敗しました (${guild.name}):`, error.message));
   for (const guild of client.guilds.cache.values()) if (tracksGuild(guild)) await announceBotUpdate(guild).catch((error) => console.error(`Bot更新告知に失敗しました (${guild.name}):`, error.message));
-  await syncCustomCrosshairs().catch((error) => console.error(`カスタムクロスヘア同期に失敗しました:`, error.message));
-  await monitorGameStatus().catch((error) => console.error('ゲーム状態監視エラー:', error));
-  gameStatusTimer = setInterval(() => monitorGameStatus().catch((error) => console.error('ゲーム状態監視エラー:', error)), GAME_STATUS_INTERVAL_MS);
-  for (const guildId of Object.keys(apexTracker.store.data.guilds)) {
-    await apexTracker.repairPanel(guildId, client).catch((error) => reportRuntimeError('Apex戦績パネルの復元', error));
-  }
-  apexTrackerTimer = setInterval(() => apexTracker.refreshAllPanels(client).catch((error) => reportRuntimeError('Apex戦績パネルの自動更新', error)), APEX_AUTO_REFRESH_INTERVAL_MS);
   await expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error));
   licenseTimer = setInterval(() => expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error)), LICENSE_EXPIRY_CHECK_INTERVAL_MS);
   // パネル・変換パネル・キャッシュは対象限定の自己復旧監視でまとめて保守する。
@@ -2736,7 +2320,6 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     }
     if (invitePanel.matches(interaction)) return await invitePanel.handle(interaction);
     if (interaction.inGuild() && guestAccess.isGuest(interaction.member)) return interaction.reply({ ephemeral: true, content: '🎟️ VC限定ゲストは、指定されたボイスチャンネルとそのチャットだけを利用できます。' });
-    if (apexTracker.matches(interaction)) return await apexTracker.handle(interaction, discord);
     // await を省くと変換失敗がこのtry/catchを通らず、Discord接続エラーとして生の例外が記録される。
     if (isMediaConverterInteraction(interaction)) return await handleMediaConverterInteraction(interaction);
     if (interaction.isChatInputCommand() && interaction.commandName === '利用権') {
@@ -2944,17 +2527,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       await moderationStore.save();
       return interaction.reply({ ephemeral: true, content: '✅ 荒らし対策の検知条件とペナルティを更新しました。' });
     }
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('valorant:lookup:')) {
-      const kind = interaction.customId.split(':')[2] === 'live' ? 'ライブマッチ' : '戦績・試合履歴';
-      const riotId = formatRiotId(interaction.fields.getTextInputValue('riot-id'));
-      return interaction.reply({ ephemeral: true, embeds: [buildValorantConnectionRequiredEmbed(riotId, kind)] });
-    }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('verify:answer:')) return interaction.reply({ ...(interaction.inGuild() ? { ephemeral: true } : {}), content: 'この認証画面は更新されました。新しい認証を開始してください。' });
-    if (interaction.isStringSelectMenu() && interaction.customId === 'crosshair:select') {
-      const crosshair = valorantPanelStore.getCrosshair(interaction.values[0]);
-      if (!crosshair) return interaction.reply({ ephemeral: true, content: '選択されたクロスヘアは削除されたか、見つかりません。' });
-      return interaction.reply({ ephemeral: true, embeds: [buildCrosshairDetailEmbed(crosshair)] });
-    }
     if (interaction.isChannelSelectMenu() && interaction.customId === 'mod:log-channel') {
       requirePermission(interaction, PermissionFlagsBits.ManageGuild);
       const channel = interaction.channels.first();
@@ -2963,44 +2536,11 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       await moderationStore.save();
       return interaction.reply({ ephemeral: true, content: `✅ モデレーションログを ${channel} に設定しました。` });
     }
-    if (interaction.isButton() && interaction.customId === 'game-status:refresh') {
-      await interaction.deferUpdate();
-      // クリックされた古い複製メッセージを更新して新たな状態パネルを増やさない。
-      // 監視側が設定済みの1件だけを更新するため、常に同じパネルを維持できる。
-      await monitorGameStatus();
-      const settings = interaction.guildId && serverSettingsStore.get(interaction.guildId);
-      if (settings?.gameStatusPanelChannelId === interaction.channelId && settings.gameStatusPanelMessageId === interaction.message.id) return;
-      return interaction.followUp({ ephemeral: true, content: '✅ 登録済みの状態パネルを更新しました。' });
-    }
     if (interaction.isButton() && interaction.customId === 'mbti:start') return startMbtiCheck(interaction);
     if (interaction.isButton() && interaction.customId.startsWith('mbti:answer:')) return answerMbtiQuestion(interaction);
     if (interaction.isButton() && interaction.customId.startsWith('mbti:back:')) return backMbtiQuestion(interaction);
     if (interaction.isButton() && interaction.customId.startsWith('mbti:resume:')) return resumeMbtiCheck(interaction);
     if (interaction.isButton() && interaction.customId.startsWith('mbti:reset:')) return resetMbtiCheck(interaction);
-    if (interaction.isButton() && interaction.customId.startsWith('crosshair:copy:')) {
-      const crosshair = valorantPanelStore.getCrosshair(interaction.customId.slice('crosshair:copy:'.length));
-      if (!crosshair) return interaction.reply({ ephemeral: true, content: 'このクロスヘアは現在のカタログにありません。' });
-      return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0xff4655).setTitle(`📋 ${crosshair.name} — インポート用コード`).setDescription(`\`\`\`${crosshair.code.slice(0, 1_000)}\`\`\`\n\n上のコードをコピーし、VALORANTの **設定 → クロスヘア → プロフィールをインポート** に貼り付けてください。`).setFooter({ text: 'この表示はあなただけに見えます。' })] });
-    }
-    if (interaction.isButton() && interaction.customId.startsWith('crosshair:page:')) {
-      const page = Number(interaction.customId.split(':')[2]);
-      if (!Number.isInteger(page)) return interaction.reply({ ephemeral: true, content: 'ページ情報が正しくありません。' });
-      return interaction.update(buildCrosshairPanel(interaction.guildId, page));
-    }
-    if (interaction.isButton() && interaction.customId === 'crosshair:random') {
-      const crosshairs = valorantPanelStore.listCrosshairs();
-      if (!crosshairs.length) return interaction.reply({ ephemeral: true, content: 'まだクロスヘアが登録されていません。' });
-      return interaction.reply({ ephemeral: true, embeds: [buildCrosshairDetailEmbed(chooseRandom(crosshairs))] });
-    }
-    if (interaction.isButton() && interaction.customId === 'valorant:me') {
-      return interaction.reply({ ephemeral: true, embeds: [buildValorantConnectionRequiredEmbed(interaction.user.username, '自分の戦績')] });
-    }
-    if (interaction.isButton() && (interaction.customId === 'valorant:player' || interaction.customId === 'valorant:live')) {
-      const kind = interaction.customId === 'valorant:live' ? 'live' : 'player';
-      return interaction.showModal(new ModalBuilder().setCustomId(`valorant:lookup:${kind}`).setTitle(kind === 'live' ? 'ライブマッチを確認' : '戦績・試合履歴を確認').addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('riot-id').setLabel('Riot ID（ゲーム名#タグ）').setPlaceholder('例: AmA#JP1').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(25)),
-      ));
-    }
     if (interaction.isButton() && interaction.customId === 'mod:edit-settings') {
       requirePermission(interaction, PermissionFlagsBits.ManageGuild);
       const settings = moderationStore.get(interaction.guild.id);

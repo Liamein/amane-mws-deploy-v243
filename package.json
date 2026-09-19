@@ -1,17 +1,11 @@
 {
   "name": "discord-community-bot",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node src/bot.js",
     "deploy-commands": "node src/deploy-commands.js",
-    "publish-crosshairs": "node src/publish-crosshairs.js",
-    "republish-crosshairs": "node src/publish-crosshairs.js --replace",
-    "refresh-crosshairs": "node src/publish-crosshairs.js --refresh",
-    "fix-crosshair-images": "node src/publish-crosshairs.js --refresh --reset-preview-state",
-    "refresh-crosshair-images": "node src/refresh-crosshair-images.js",
-    "publish-custom-crosshairs": "node src/publish-custom-crosshairs.js",
     "migrate-asset-forums": "node src/migrate-asset-forums.js",
     "test": "node --test"
   },

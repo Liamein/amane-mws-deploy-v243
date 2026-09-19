@@ -6,14 +6,6 @@ function required(name, env = process.env) {
   return value;
 }
 
-function optionalPositiveInteger(name, fallback, env = process.env) {
-  const value = env[name]?.trim();
-  if (!value) return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) throw new Error(`${name} は1〜500の整数で設定してください。`);
-  return parsed;
-}
-
 function requiredDiscordUserIds(name, env = process.env) {
   const values = required(name, env).split(',').map((value) => value.trim()).filter(Boolean);
   if (!values.length || values.some((value) => !/^\d{17,20}$/.test(value))) throw new Error(`${name} にはDiscordユーザーIDをカンマ区切りで設定してください。`);
@@ -31,7 +23,5 @@ export function loadConfig(env = process.env) {
     discordGuildId: env.DISCORD_GUILD_ID?.trim() || null,
     inactivityAutomationEnabled: env.INACTIVITY_AUTOMATION_ENABLED?.trim().toLowerCase() !== 'false',
     inactivityExemptRoleIds: new Set((env.INACTIVITY_EXEMPT_ROLE_IDS || '').split(',').map((id) => id.trim()).filter(Boolean)),
-    valorantCrosshairChannelId: env.VALORANT_CROSSHAIR_CHANNEL_ID?.trim() || null,
-    valorantCrosshairLimit: optionalPositiveInteger('VALORANT_CROSSHAIR_LIMIT', 50, env),
   };
 }

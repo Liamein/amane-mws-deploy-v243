@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EmbedBuilder } from 'discord.js';
 
 export const UPDATE_LOG_CHANNEL_ID = '1543145283687555183';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -11,7 +12,6 @@ const CONFIG_ENV_KEYS = [
   'DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'COMMAND_OWNER_IDS',
   'BOT_INSTALL_LOG_CHANNEL_ID', 'BOT_DM_LOG_CHANNEL_ID', 'MBTI_WELCOME_CHANNEL_ID',
   'DISCORD_GUILD_ID', 'INACTIVITY_AUTOMATION_ENABLED', 'INACTIVITY_EXEMPT_ROLE_IDS',
-  'VALORANT_CROSSHAIR_CHANNEL_ID', 'VALORANT_CROSSHAIR_LIMIT',
 ];
 
 function sha256(value) {
@@ -74,7 +74,7 @@ async function writeState(manifest, fingerprint) {
   await rename(temporary, STATE_FILE);
 }
 
-export function createUpdateMonitor(discord, { version, summary, intervalMs = 60_000 } = {}) {
+export function createUpdateMonitor(discord, { version, release, intervalMs = 60_000 } = {}) {
   let inFlight = null;
   let timer = null;
 
@@ -91,24 +91,27 @@ export function createUpdateMonitor(discord, { version, summary, intervalMs = 60
         throw new Error(`更新記録チャンネル ${UPDATE_LOG_CHANNEL_ID} に送信できません。`);
       }
       const changes = changedUpdatePaths(previous?.manifest, manifest);
-      const marker = fingerprint.slice(0, 16);
-      const heading = `📋 **あまね Bot 更新記録**\nバージョン: ${version ?? '未設定'}\n変更ID: \`${marker}\``;
-      const description = previous ? '' : `\n${summary ?? '更新監視を開始しました。'}`;
-      const lines = changes.map((path) => `• ${path}`);
-      const batches = [];
-      let batch = '';
-      for (const line of lines) {
-        if (batch && batch.length + line.length + 1 > 1_400) {
-          batches.push(batch);
-          batch = '';
-        }
-        batch += `${batch ? '\n' : ''}${line}`;
-      }
-      if (batch) batches.push(batch);
-      await channel.send({ content: `${heading}${description}\n変更対象 (${changes.length}):\n${batches.shift() ?? 'なし'}`, allowedMentions: { parse: [] } });
-      for (const extra of batches) await channel.send({ content: `📋 変更ID: \`${marker}\` 続き\n${extra}`, allowedMentions: { parse: [] } });
+      const confirmed = release || {};
+      const now = new Date();
+      const timestamp = new Intl.DateTimeFormat('ja-JP', {
+        timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(now).replaceAll('/', '/');
+      await channel.send({
+        embeds: [new EmbedBuilder()
+          .setColor(0x7b61ff)
+          .setTitle(`✅ ${confirmed.title || 'あまねBotを更新しました'}`)
+          .setDescription(confirmed.description || '実際に検出した更新を反映しました。')
+          .addFields(
+            { name: '対象', value: confirmed.target || `${changes.length}件の変更を反映`, inline: false },
+            { name: '確認', value: confirmed.verification || '更新内容を記録しました。', inline: false },
+          )
+          .setFooter({ text: `アップデート記録 • v${version ?? '未設定'} • ${timestamp}` })
+          .setTimestamp(now)],
+        allowedMentions: { parse: [] },
+      });
       await writeState(manifest, fingerprint);
-      console.log(`Bot更新を記録しました: ${marker} (${changes.length} 件)`);
+      console.log(`Bot更新を記録しました (${changes.length} 件)。`);
       return true;
     })().finally(() => { inFlight = null; });
     return inFlight;

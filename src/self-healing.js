@@ -11,6 +11,7 @@ export function shouldRecoverGateway({ isReady, now, unavailableSince = 0, lastR
 export async function retryRecoverable(operation, {
   attempts = 2,
   delayMs = 750,
+  jitterRatio = 0.2,
   isRecoverable = () => true,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
@@ -21,7 +22,8 @@ export async function retryRecoverable(operation, {
     } catch (error) {
       lastError = error;
       if (attempt === attempts || !isRecoverable(error)) throw error;
-      await sleep(delayMs * attempt);
+      const jitter = Math.max(0, Math.min(1, jitterRatio)) * Math.random() * delayMs;
+      await sleep(Math.round(delayMs * attempt + jitter));
     }
   }
   throw lastError;

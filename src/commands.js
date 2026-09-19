@@ -1,16 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
 
-function withApexPlayerOptions(command) {
-  return command
-    .addStringOption((option) => option.setName('player').setDescription('EAアカウント名／SwitchはUID（未指定時は登録済みアカウント）').setRequired(false).setMaxLength(100))
-    .addStringOption((option) => option.setName('platform').setDescription('プラットフォーム（未指定時は登録内容またはPC）').setRequired(false).addChoices(
-      { name: 'PC', value: 'PC' },
-      { name: 'PlayStation', value: 'PS4' },
-      { name: 'Xbox', value: 'X1' },
-      { name: 'Nintendo Switch', value: 'SWITCH' },
-    ));
-}
-
 export const commands = [
   new SlashCommandBuilder().setName('help').setDescription('コマンド一覧を表示します'),
   new SlashCommandBuilder().setName('command-access').setDescription('Botコマンドを使えるユーザーを管理します（所有者専用）')
@@ -61,55 +50,6 @@ export const commands = [
     .addChannelOption((option) => option.setName('channel').setDescription('入退室ログの送信先').setRequired(true)),
   new SlashCommandBuilder().setName('bot-update-config').setDescription('Bot更新告知の送信先を設定します（所有者専用）')
     .addChannelOption((option) => option.setName('channel').setDescription('Bot更新告知の送信先').setRequired(true)),
-  new SlashCommandBuilder().setName('game-status-config').setDescription('ゲーム状態の自動更新パネルの設置先を設定します（サーバー管理権限が必要）')
-    .addChannelOption((option) => option.setName('channel').setDescription('状態パネルの設置先（個別通知は投稿しません）').setRequired(true)),
-  new SlashCommandBuilder().setName('game-status').setDescription('VALORANT・Apex・Overwatch・VRChatのサービス状態を確認します'),
-  withApexPlayerOptions(new SlashCommandBuilder().setName('rank').setDescription('Apexの現在ランクと戦績を表示します')),
-  withApexPlayerOptions(new SlashCommandBuilder().setName('rankstart').setDescription('Apexの手動セッション計測を開始します')),
-  new SlashCommandBuilder().setName('rankend').setDescription('Apexの手動セッション計測を終了し、増減を表示します'),
-  new SlashCommandBuilder().setName('apex-map').setDescription('Apexランクの現在・次回マップを表示します'),
-  new SlashCommandBuilder().setName('team').setDescription('現在参加中のVCメンバーをランダムにチーム分けします')
-    .addIntegerOption((option) => option.setName('size').setDescription('1チームの人数（既定: 3）').setRequired(false).setMinValue(2).setMaxValue(10)),
-  new SlashCommandBuilder().setName('apex-panel').setDescription('登録ボタン付きApex戦績パネルを設置・更新します（サーバー管理権限が必要）')
-    .addChannelOption((option) => option.setName('channel').setDescription('パネルの投稿先（既定: 現在のチャンネル）').setRequired(false)),
-  new SlashCommandBuilder().setName('game-status-panel').setDescription('更新されるゲームサービス状態パネルを作成します（サーバー管理権限が必要）')
-    .addChannelOption((option) => option.setName('channel').setDescription('パネルの投稿先（既定: 現在のチャンネル）').setRequired(false)),
-  new SlashCommandBuilder().setName('valorant-panel').setDescription('VALORANTのクロスヘア・戦績案内パネルを作成・編集します（サーバー管理権限が必要）')
-    .addSubcommand((subcommand) => subcommand.setName('post').setDescription('パネルを作成または既存投稿を更新します')
-      .addStringOption((option) => option.setName('type').setDescription('パネルの種類').setRequired(true).addChoices(
-        { name: 'クロスヘア', value: 'crosshairs' }, { name: '戦績・ライブマッチ', value: 'tracker' },
-      ))
-      .addChannelOption((option) => option.setName('channel').setDescription('投稿先（未指定なら現在のチャンネル）')))
-    .addSubcommand((subcommand) => subcommand.setName('edit').setDescription('既存パネルの見出し・本文を編集します')
-      .addStringOption((option) => option.setName('type').setDescription('編集するパネル').setRequired(true).addChoices(
-        { name: 'クロスヘア', value: 'crosshairs' }, { name: '戦績・ライブマッチ', value: 'tracker' },
-      ))
-      .addStringOption((option) => option.setName('title').setDescription('見出し（任意）').setMaxLength(100))
-      .addStringOption((option) => option.setName('description').setDescription('本文（任意）').setMaxLength(1_500))),
-  new SlashCommandBuilder().setName('crosshair').setDescription('VALORANTクロスヘアを管理します（サーバー管理権限が必要）')
-    .addSubcommand((subcommand) => subcommand.setName('add').setDescription('クロスヘアを登録します')
-      .addStringOption((option) => option.setName('name').setDescription('表示名').setRequired(true).setMaxLength(100))
-      .addStringOption((option) => option.setName('code').setDescription('インポートコード').setRequired(true).setMaxLength(1_000))
-      .addStringOption((option) => option.setName('author').setDescription('作者名（任意）').setMaxLength(100))
-      .addStringOption((option) => option.setName('color').setDescription('色（任意）').setMaxLength(50))
-      .addStringOption((option) => option.setName('category').setDescription('分類（任意）').setMaxLength(50))
-      .addStringOption((option) => option.setName('description').setDescription('説明（任意）').setMaxLength(1_500))
-      .addStringOption((option) => option.setName('image-url').setDescription('プレビュー画像URL（任意）').setMaxLength(1_000)))
-    .addSubcommand((subcommand) => subcommand.setName('edit').setDescription('登録済みクロスヘアを編集します')
-      .addStringOption((option) => option.setName('id').setDescription('クロスヘアID').setRequired(true))
-      .addStringOption((option) => option.setName('name').setDescription('表示名（任意）').setMaxLength(100))
-      .addStringOption((option) => option.setName('code').setDescription('インポートコード（任意）').setMaxLength(1_000))
-      .addStringOption((option) => option.setName('author').setDescription('作者名（任意）').setMaxLength(100))
-      .addStringOption((option) => option.setName('color').setDescription('色（任意）').setMaxLength(50))
-      .addStringOption((option) => option.setName('category').setDescription('分類（任意）').setMaxLength(50))
-      .addStringOption((option) => option.setName('description').setDescription('説明（任意）').setMaxLength(1_500))
-      .addStringOption((option) => option.setName('image-url').setDescription('プレビュー画像URL（任意）').setMaxLength(1_000)))
-    .addSubcommand((subcommand) => subcommand.setName('remove').setDescription('クロスヘアを削除します').addStringOption((option) => option.setName('id').setDescription('クロスヘアID').setRequired(true)))
-    .addSubcommand((subcommand) => subcommand.setName('list').setDescription('登録済みクロスヘアを一覧表示します')),
-  new SlashCommandBuilder().setName('valorant').setDescription('VALORANTの戦績・ライブマッチ案内を表示します')
-    .addSubcommand((subcommand) => subcommand.setName('me').setDescription('自分の戦績案内を表示します'))
-    .addSubcommand((subcommand) => subcommand.setName('player').setDescription('指定プレイヤーの戦績案内を表示します').addStringOption((option) => option.setName('riot-id').setDescription('ゲーム名#タグ').setRequired(true).setMaxLength(25)))
-    .addSubcommand((subcommand) => subcommand.setName('live').setDescription('指定プレイヤーのライブマッチ案内を表示します').addStringOption((option) => option.setName('riot-id').setDescription('ゲーム名#タグ').setRequired(true).setMaxLength(25))),
   new SlashCommandBuilder().setName('inactivity-status').setDescription('最終アクティブ日時を確認します（サーバー管理権限が必要）')
     .addUserOption((option) => option.setName('member').setDescription('確認するメンバー').setRequired(true)),
   new SlashCommandBuilder().setName('mod-config').setDescription('荒らし対策の設定を変更・確認します（サーバー管理権限が必要）')

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
-const DEFAULTS = Object.freeze({ auditLogChannelId: null, memberLogChannelId: null, updateChannelId: null, gameStatusChannelId: null, gameStatusPanelChannelId: null, gameStatusPanelMessageId: null, privateApexGuideMessageId: null, lastAnnouncedVersion: null, lastOperationsDigestAt: null, lastPanelRepairAt: null, lastPanelRepairSummary: null });
+const DEFAULTS = Object.freeze({ auditLogChannelId: null, memberLogChannelId: null, updateChannelId: null, lastAnnouncedVersion: null, lastOperationsDigestAt: null, lastPanelRepairAt: null, lastPanelRepairSummary: null });
 
 function normalizeSettings(value) {
   return Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, value?.[key] ?? DEFAULTS[key]]));
@@ -32,9 +32,6 @@ export class ServerSettingsStore {
   get(guildId) { return normalizeSettings(this.guilds[guildId]); }
   setMemberLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), memberLogChannelId: channelId }; }
   setUpdateChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), updateChannelId: channelId }; }
-  setGameStatusChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), gameStatusChannelId: channelId }; }
-  setGameStatusPanel(guildId, channelId, messageId) { this.guilds[guildId] = { ...this.get(guildId), gameStatusPanelChannelId: channelId, gameStatusPanelMessageId: messageId }; }
-  setPrivateApexGuidePanel(guildId, messageId) { this.guilds[guildId] = { ...this.get(guildId), privateApexGuideMessageId: messageId }; }
   setAuditLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), auditLogChannelId: channelId }; }
   markAnnounced(guildId, version) { this.guilds[guildId] = { ...this.get(guildId), lastAnnouncedVersion: version }; }
   markOperationsDigest(guildId, timestamp) { this.guilds[guildId] = { ...this.get(guildId), lastOperationsDigestAt: timestamp }; }

@@ -26,19 +26,25 @@ export async function startKoyebService({
   const closed = new Promise((resolveResult) => { resolveClosed = resolveResult; });
 
   const server = createServer((request, response) => {
-    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
     response.setHeader('Cache-Control', 'no-store');
     if (!['GET', 'HEAD'].includes(request.method)) {
       response.writeHead(405, { Allow: 'GET, HEAD' });
       return response.end('Method Not Allowed');
     }
-    if (!['/', '/healthz'].includes(request.url?.split('?')[0])) {
+    const path = request.url?.split('?')[0];
+    if (!['/', '/healthz', '/health'].includes(path)) {
       response.writeHead(404);
       return response.end('Not Found');
+    }
+    if (path === '/health') {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.writeHead(childExited ? 503 : 200);
+      return response.end(JSON.stringify({ status: childExited ? 'recovering' : 'ok', process: childExited ? 'stopped' : 'running', pid: child?.pid || null, restartScheduled: Boolean(restartTimer), uptimeSeconds: Math.floor(process.uptime()) }));
     }
     // This is a liveness endpoint for Render/UptimeRobot.  It intentionally
     // stays successful while Discord reconnects, so a temporary Gateway
     // failure cannot make the entire service look offline or trigger a sleep.
+    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
     response.writeHead(200);
     response.end('OK');
   });
