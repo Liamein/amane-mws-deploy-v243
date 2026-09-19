@@ -925,6 +925,7 @@ const ASSET_FORUM_DEFAULT_CHANNEL_IDS = Object.freeze({
   hair: '1543399074923810926',
   shader: '1543399076308062258',
 });
+const ASSET_FORUM_RECOVERY_CHANNEL_IDS = Object.freeze(['1543556347793244170', '1546914503709556908']);
 
 async function resolveAssetForumCategory(guild, panelChannel, selectedCategory, settings) {
   const candidates = [selectedCategory?.id, panelChannel?.parentId, ...Object.values(settings.categoryChannelIds || {})]
@@ -1004,26 +1005,22 @@ function buildAssetStoragePanel(settings) {
 }
 
 async function recoverAssetCustomForums(guild, settings) {
-  const panel = guild.channels.cache.get(ASSET_STORAGE_PANEL_CHANNEL_ID);
-  if (!panel?.parentId) return settings;
-  const standardIds = new Set([...Object.values(ASSET_FORUM_DEFAULT_CHANNEL_IDS), ...Object.values(settings.categoryChannelIds || {})]);
-  const discoveredIds = [...guild.channels.cache.values()]
-    .filter((channel) => channel.parentId === panel.parentId && channel.type === ChannelType.GuildForum && !standardIds.has(channel.id))
-    .map((channel) => channel.id);
-  const customForumChannelIds = [...new Set([...(settings.customForumChannelIds || []), ...discoveredIds])];
+  if (!guild.channels.cache.has(ASSET_STORAGE_PANEL_CHANNEL_ID)) return settings;
+  const recoveredIds = ASSET_FORUM_RECOVERY_CHANNEL_IDS.filter((id) => guild.channels.cache.get(id)?.type === ChannelType.GuildForum);
+  const customForumChannelIds = [...new Set([...(settings.customForumChannelIds || []), ...recoveredIds])];
   if (customForumChannelIds.length === (settings.customForumChannelIds || []).length) return settings;
   const updated = assetStorageStore.configure(guild.id, { customForumChannelIds });
   await assetStorageStore.save();
   return updated;
 }
 
-async function assetCategoryOptions(guild, settings) {
+async function assetCategoryOptions(guild, settings, member) {
   const standardOptions = Object.entries(ASSET_CATEGORIES).map(([value, category]) => ({ label: category.label, value, emoji: category.emoji, description: `${category.label}用の保存先を選びます` }));
   // パネルから追加したフォーラムも、通常カテゴリと同じ選択画面から選べるようにする。
   // すでに削除された保存先は候補に出さず、選択後の失敗を防止する。
   const customOptions = (settings.customForumChannelIds || []).map((forumId) => {
     const forum = guild.channels.cache.get(forumId);
-    if (forum?.type !== ChannelType.GuildForum) return null;
+    if (forum?.type !== ChannelType.GuildForum || !forum.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)) return null;
     return {
       label: `追加: ${forum.name}`.slice(0, 100),
       value: `forum-${forum.id}`,
@@ -2868,7 +2865,7 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
       await requireAssetPanelAccess(interaction);
       const settings = await recoverAssetCustomForums(interaction.guild, assetStorageStore.get(interaction.guild.id));
-      const options = await assetCategoryOptions(interaction.guild, settings);
+      const options = await assetCategoryOptions(interaction.guild, settings, interaction.member);
       return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x7b61ff).setTitle('🗃️ アセット保存 — 1 / 2').setDescription('保存するカテゴリまたは追加フォーラムを選択してください。')], components: [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('asset:category').setPlaceholder('保存先を選択').addOptions(options))] });
     }
     if (interaction.isButton() && interaction.customId === 'asset:forum:create') {
