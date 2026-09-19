@@ -85,13 +85,13 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', '機能要望']);
-const BOT_VERSION = '2.5.1';
+const BOT_VERSION = '2.5.2';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
   title: '不要な外部連携を削除し、起動時の同期を安定化',
-  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、起動時のDiscordコマンド同期と更新記録に時間制限を追加しました。',
-  target: 'あまねBotのゲーム連携、Discordコマンド、更新記録',
+  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、更新記録と起動時の補助処理が停止しないよう時間制限を追加しました。',
+  target: 'あまねBotのゲーム連携、Discordコマンド、更新記録、起動処理',
   verification: '構文・自動復旧テストを実行し、クラウドでHTTP監視、Gateway接続、コマンド同期を確認しました。',
 });
 const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
@@ -494,6 +494,24 @@ async function reportRuntimeError(scope, error, fields = []) {
   const description = (detail || fallback).slice(0, 3_800);
   console.error(`${scope}:`, error);
   await writeCentralAuditLog({ title: `エラー — ${scope}`, description, fields, color: 0xed4245 }).catch(() => {});
+}
+
+async function runStartupTask(scope, operation, { timeoutMs = 20_000, fallback = undefined } = {}) {
+  let timeout;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${scope} が ${timeoutMs / 1_000} 秒以内に完了しませんでした。`)), timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  } catch (error) {
+    reportRuntimeError(scope, error).catch(() => {});
+    return fallback;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function isRecoverableSelfHealingError(error) {
@@ -2195,8 +2213,9 @@ discord.once(Events.ClientReady, async (client) => {
   await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
   botUpdateMonitor.start();
   await verificationSettingsStore.load();
-  await guestAccess.start().catch((error) => reportRuntimeError('VC限定ゲスト機能の初期設定', error));
-  await invitePanel.start().catch((error) => reportRuntimeError('招待パネルの初期設定', error));
+  console.log('Discord core services are ready.');
+  await runStartupTask('VC限定ゲスト機能の初期設定', () => guestAccess.start());
+  await runStartupTask('招待パネルの初期設定', () => invitePanel.start());
   const initialPanelRepair = await repairManagedPanels();
   selfHealingState.lastPanelRepairAt = Date.now();
   await publishMediaConverterPanel(client).catch((error) => console.warn(`メディア変換パネルを更新できません:`, error.message));
