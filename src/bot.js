@@ -2182,6 +2182,7 @@ discord.once(Events.ClientReady, async (client) => {
   console.log('Discord core services are ready.');
   await runStartupTask('VC限定ゲスト機能の初期設定', () => guestAccess.start());
   await runStartupTask('招待パネルの初期設定', () => invitePanel.start());
+  console.log('Invite panel is ready.');
   const initialPanelRepair = await repairManagedPanels();
   selfHealingState.lastPanelRepairAt = Date.now();
   await publishMediaConverterPanel(client).catch((error) => console.warn(`メディア変換パネルを更新できません:`, error.message));
