@@ -85,12 +85,12 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', '機能要望']);
-const BOT_VERSION = '2.5.2';
+const BOT_VERSION = '2.5.3';
 // This object is the single source of truth for the fixed update-log panel.
 // Every completed update should replace these values before its release.
 const BOT_UPDATE_PANEL = Object.freeze({
   title: '不要な外部連携を削除し、起動時の同期を安定化',
-  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、更新記録と起動時の補助処理が停止しないよう時間制限を追加しました。',
+  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、更新記録と起動時の補助処理に時間制限を追加しました。運用に不要なZIPは更新判定から除外します。',
   target: 'あまねBotのゲーム連携、Discordコマンド、更新記録、起動処理',
   verification: '構文・自動復旧テストを実行し、クラウドでHTTP監視、Gateway接続、コマンド同期を確認しました。',
 });

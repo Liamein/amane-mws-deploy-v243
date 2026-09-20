@@ -53,7 +53,7 @@ async function scanDirectory(path, manifest) {
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const relativePath = path ? `${path}/${entry.name}` : entry.name;
     if (entry.isDirectory() && !RUNTIME_DIRECTORIES.has(entry.name)) await scanDirectory(relativePath, manifest);
-    else if (entry.isFile() && !/\.(?:log|tmp)$/i.test(entry.name)) manifest[relativePath] = await hashFile(relativePath);
+    else if (entry.isFile() && !/\.(?:log|tmp|zip)$/i.test(entry.name)) manifest[relativePath] = await hashFile(relativePath);
   }
 }
 
