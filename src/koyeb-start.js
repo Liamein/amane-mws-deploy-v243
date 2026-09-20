@@ -1,12 +1,40 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { startCloudStateSync } from './state-sync.js';
 
 const projectDirectory = fileURLToPath(new URL('../', import.meta.url));
+const RETIRED_GAME_FILES = Object.freeze([
+  'amane-v243.zip',
+  'src/apex-tracker.js',
+  'src/private-apex-guide.js',
+  'src/valorant-panels.js',
+  'src/crosshair-preview.js',
+  'src/publish-crosshairs.js',
+  'src/publish-custom-crosshairs.js',
+  'src/refresh-crosshair-images.js',
+  'src/game-status.js',
+  'src/game-status-panel.js',
+]);
+
+async function removeRetiredGameFiles() {
+  const removed = [];
+  for (const relativePath of RETIRED_GAME_FILES) {
+    const path = resolve(projectDirectory, relativePath);
+    try {
+      await stat(path);
+      await rm(path, { force: true });
+      removed.push(relativePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  if (removed.length) console.log(`Removed ${removed.length} retired game integration files.`);
+}
 
 export async function startKoyebService({
   port = Number(process.env.PORT || 8080),
@@ -16,6 +44,7 @@ export async function startKoyebService({
     throw new Error('PORT must be an integer between 0 and 65535.');
   }
 
+  await removeRetiredGameFiles().catch((error) => console.error(`Retired file cleanup failed: ${error.message}`));
   const stateSync = await startCloudStateSync();
   let stopping = false;
   let child = null;
