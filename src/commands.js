@@ -48,8 +48,6 @@ export const commands = [
     .addAttachmentOption((option) => option.setName('file').setDescription('添付するファイル（任意）').setRequired(false)),
   new SlashCommandBuilder().setName('server-log-config').setDescription('入退室ログの送信先を設定します（サーバー管理権限が必要）')
     .addChannelOption((option) => option.setName('channel').setDescription('入退室ログの送信先').setRequired(true)),
-  new SlashCommandBuilder().setName('bot-update-config').setDescription('Bot更新告知の送信先を設定します（所有者専用）')
-    .addChannelOption((option) => option.setName('channel').setDescription('Bot更新告知の送信先').setRequired(true)),
   new SlashCommandBuilder().setName('inactivity-status').setDescription('最終アクティブ日時を確認します（サーバー管理権限が必要）')
     .addUserOption((option) => option.setName('member').setDescription('確認するメンバー').setRequired(true)),
   new SlashCommandBuilder().setName('mod-config').setDescription('荒らし対策の設定を変更・確認します（サーバー管理権限が必要）')

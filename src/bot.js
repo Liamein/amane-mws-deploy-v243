@@ -24,7 +24,7 @@ import { retryRecoverable, shouldRecoverGateway, shouldRunMaintenance } from './
 import { chooseRandom, formatDuration, parseChoices } from './utils.js';
 import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './verification-settings.js';
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
-import { createUpdateMonitor } from './update-monitor.js';
+import { createErrorDeduper } from './error-deduper.js';
 import { globalCommands } from './commands.js';
 
 const config = loadConfig();
@@ -68,6 +68,7 @@ const selfHealingState = {
   gatewayUnavailableSince: startedAt,
   lastGatewayRecoveryAt: 0,
   lastFailureReportedAt: new Map(),
+  scheduled: new Set(),
 };
 
 const WELCOME_MESSAGES = [
@@ -85,16 +86,7 @@ const MBTI_CUSTOM_EMOJIS = {
   welcome: '<a:nekolove:1517284982257877184>',
 };
 const REGISTERED_USER_COMMANDS = new Set(['help', 'ping', 'uptime', 'user', '機能要望']);
-const BOT_VERSION = '2.5.4';
-// This object is the single source of truth for the fixed update-log panel.
-// Every completed update should replace these values before its release.
-const BOT_UPDATE_PANEL = Object.freeze({
-  title: '不要な外部連携を削除し、起動時の同期を安定化',
-  description: 'ゲーム連携のコマンド・定期通信・パネルを撤去し、起動時に残存する旧ゲーム連携ファイルも自動整理します。更新記録と補助処理の停止も防止します。',
-  target: 'あまねBotのゲーム連携、残存ファイル、Discordコマンド、更新記録、起動処理',
-  verification: '構文・自動復旧テストを実行し、クラウドでHTTP監視、Gateway接続、コマンド同期を確認しました。',
-});
-const botUpdateMonitor = createUpdateMonitor(discord, { version: BOT_VERSION, release: BOT_UPDATE_PANEL });
+const errorDeduper = createErrorDeduper();
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
@@ -493,6 +485,7 @@ async function reportRuntimeError(scope, error, fields = []) {
     : String(error);
   const description = (detail || fallback).slice(0, 3_800);
   console.error(`${scope}:`, error);
+  if (!errorDeduper.shouldNotify(scope, error).notify) return;
   await writeCentralAuditLog({ title: `エラー — ${scope}`, description, fields, color: 0xed4245 }).catch(() => {});
 }
 
@@ -597,7 +590,12 @@ async function runSelfHealingCycle({ target = 'all' } = {}) {
 }
 
 function requestSelfHealing(target = 'all', delayMs = 0) {
-  setTimeout(() => runSelfHealingCycle({ target }).catch((error) => reportRuntimeError(`自動復旧監視 — ${target}`, error)), delayMs);
+  if (selfHealingState.scheduled.has(target)) return;
+  selfHealingState.scheduled.add(target);
+  setTimeout(() => {
+    selfHealingState.scheduled.delete(target);
+    runSelfHealingCycle({ target }).catch((error) => reportRuntimeError(`自動復旧監視 — ${target}`, error));
+  }, delayMs).unref?.();
 }
 
 function startSelfHealingMonitor() {
@@ -610,29 +608,6 @@ const guestAccess = new GuestAccess(discord, { reportError: reportRuntimeError }
 guestAccess.registerEvents();
 const invitePanel = new InvitePanel(discord, { reportError: reportRuntimeError, guestAccess });
 invitePanel.registerEvents();
-
-async function announceBotUpdate(guild, { force = false } = {}) {
-  const settings = serverSettingsStore.get(guild.id);
-  if (!settings.updateChannelId || (!force && settings.lastAnnouncedVersion === BOT_VERSION)) return false;
-  const channel = await getTextChannel(settings.updateChannelId);
-  if (!channel) {
-    console.warn(`更新告知チャンネルに送信できません (${guild.name})`);
-    return false;
-  }
-  const payload = { content: '', embeds: [new EmbedBuilder().setColor(0x57f287)
-    .setTitle(`✅ ${BOT_UPDATE_PANEL.title}`)
-    .setDescription(BOT_UPDATE_PANEL.description)
-    .addFields(
-      { name: '対象', value: BOT_UPDATE_PANEL.target },
-      { name: '確認', value: BOT_UPDATE_PANEL.verification },
-    )
-    .setFooter({ text: `アップデート記録 • v${BOT_VERSION}` })
-    .setTimestamp()] };
-  await channel.send(payload);
-  serverSettingsStore.markAnnounced(guild.id, BOT_VERSION);
-  await serverSettingsStore.save();
-  return true;
-}
 
 function buildRecruitmentPanel(panel) {
   return {
@@ -1911,7 +1886,7 @@ async function handleCommand(interaction) {
   const { commandName } = interaction;
   if (commandName === 'help') {
     const commands = accessLevel === 'owner'
-      ? '🧭 **確認**　`/ping` `/uptime` `/user`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config` `/inactivity-status`\n✨ **パネル**　`/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config` `/bot-update-config`'
+      ? '🧭 **確認**　`/ping` `/uptime` `/user`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config` `/inactivity-status`\n✨ **パネル**　`/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config`'
       : '🧭 **確認コマンド**　`/ping` `/uptime` `/user`';
     return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 あまね・コマンドガイド').setDescription(`╭─ **使えるコマンド** ─╮\n${commands}\n╰────────────────╯\n\n${accessLevel === 'owner' ? '✅ あなたは登録管理者です。すべてのコマンドを利用できます。' : '🔐 登録済みユーザーは確認系コマンドを利用できます。'}`).setFooter({ text: '各コマンドを選ぶと日本語の入力説明が表示されます。' })] });
   }
@@ -2012,20 +1987,13 @@ async function handleCommand(interaction) {
     await writeManagementDmLog(interaction, user);
     return interaction.reply({ ephemeral: true, content: `✅ ${user} にDMを送信しました。` });
   }
-  if (commandName === 'server-log-config' || commandName === 'bot-update-config') {
-    if (commandName === 'bot-update-config') requirePrimaryBotOwner(interaction);
+  if (commandName === 'server-log-config') {
     requirePermission(interaction, PermissionFlagsBits.ManageGuild);
     const channel = interaction.options.getChannel('channel', true);
     if (!channel.isTextBased()) throw new Error('送信先にはテキストチャンネルを指定してください。');
-    if (commandName === 'server-log-config') {
-      serverSettingsStore.setMemberLogChannel(interaction.guild.id, channel.id);
-      await serverSettingsStore.save();
-      return interaction.reply({ ephemeral: true, content: `✅ 入退室ログを ${channel} に記録します。` });
-    }
-    serverSettingsStore.setUpdateChannel(interaction.guild.id, channel.id);
+    serverSettingsStore.setMemberLogChannel(interaction.guild.id, channel.id);
     await serverSettingsStore.save();
-    await announceBotUpdate(interaction.guild, { force: true });
-    return interaction.reply({ ephemeral: true, content: `✅ Bot更新告知を ${channel} に設定しました。現在のバージョンも告知しました。` });
+    return interaction.reply({ ephemeral: true, content: `✅ 入退室ログを ${channel} に記録します。` });
   }
   if (commandName === 'verification-panel') {
     requirePrimaryBotOwner(interaction);
@@ -2210,8 +2178,6 @@ discord.once(Events.ClientReady, async (client) => {
   await client.application.commands.set(globalCommands);
   if (config.discordGuildId) await client.guilds.fetch(config.discordGuildId).then((guild) => guild.commands.set([]));
   console.log('Discord application commands synchronized.');
-  await botUpdateMonitor.check().catch((error) => console.error('Bot更新記録に失敗しました:', error));
-  botUpdateMonitor.start();
   await verificationSettingsStore.load();
   console.log('Discord core services are ready.');
   await runStartupTask('VC限定ゲスト機能の初期設定', () => guestAccess.start());
@@ -2233,7 +2199,6 @@ discord.once(Events.ClientReady, async (client) => {
     }
   }
   for (const guild of client.guilds.cache.values()) await createExternalInstallConsent(guild).catch((error) => console.error(`外部サーバーの同意UI投稿に失敗しました (${guild.name}):`, error.message));
-  for (const guild of client.guilds.cache.values()) if (tracksGuild(guild)) await announceBotUpdate(guild).catch((error) => console.error(`Bot更新告知に失敗しました (${guild.name}):`, error.message));
   await expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error));
   licenseTimer = setInterval(() => expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error)), LICENSE_EXPIRY_CHECK_INTERVAL_MS);
   // パネル・変換パネル・キャッシュは対象限定の自己復旧監視でまとめて保守する。

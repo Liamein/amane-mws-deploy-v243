@@ -1,5 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, Events, PermissionFlagsBits } from 'discord.js';
+import { createSingleFlight } from './single-flight.js';
+import { hasCurrentInvitePanel } from './invite-panel-state.js';
 
 export const INVITE_PANEL_GUILD_ID = '1414606962846601302';
 export const INVITE_PANEL_CHANNEL_ID = '1518034512574025839';
@@ -69,6 +71,9 @@ export class InvitePanel {
     this.locks = new Set();
     this.ready = false;
     this.enforcing = null;
+    this.startFlight = createSingleFlight();
+    this.publishFlight = createSingleFlight();
+    this.eventsRegistered = false;
   }
   matches(interaction) { return interaction.customId?.startsWith(PREFIX); }
   async exclusive(key, operation) {
@@ -91,7 +96,13 @@ export class InvitePanel {
     }
     return { guild, channel, member };
   }
+  isCurrentPanel(message) {
+    return hasCurrentInvitePanel(message, { botUserId: this.client.user?.id, guestEnabled: Boolean(this.guestAccess?.ready) });
+  }
   async publish() {
+    return this.publishFlight(() => this.publishOnce());
+  }
+  async publishOnce() {
     const channel = await this.client.channels.fetch(INVITE_PANEL_CHANNEL_ID);
     if (channel?.guildId !== INVITE_PANEL_GUILD_ID || !channel.isSendable()) throw new Error('招待パネルの投稿先が不正です。');
     let message;
@@ -104,20 +115,32 @@ export class InvitePanel {
     if (!message) message = (await channel.messages.fetch({ limit: 50 })).find(m => m.author.id === this.client.user.id
       && m.components.some(row => row.components?.some(c => c.customId === `${PREFIX}guest`)));
     const panel = buildInvitePanel({ guestEnabled: Boolean(this.guestAccess?.ready) });
+    if (message && this.isCurrentPanel(message)) {
+      if (this.store.data.panelMessageId !== message.id) {
+        this.store.data.panelMessageId = message.id;
+        await this.store.save();
+      }
+      return { message, repaired: false };
+    }
     if (message) await message.edit(panel);
     else message = await channel.send(panel);
     this.store.data.panelMessageId = message.id;
     await this.store.save();
-    return message;
+    return { message, repaired: true };
   }
   async start() {
+    return this.startFlight(() => this.startOnce());
+  }
+  async startOnce() {
     await this.store.load();
     this.store.prune();
-    await this.revokeLegacyGuestInvites();
     this.ready = true;
-    const report = await this.enforcePermissions();
-    await this.publish();
-    return report;
+    const panel = await this.publish();
+    // 権限制御はパネルの表示と独立させる。大量の権限確認が遅れても
+    // 起動・操作・パネルの初期化を停止させない。
+    void this.revokeLegacyGuestInvites().catch((error) => this.reportError('旧ゲスト招待の整理', error));
+    void this.enforcePermissions().catch((error) => this.reportError('招待権限制御', error));
+    return panel;
   }
   async revokeLegacyGuestInvites() {
     const legacy = Object.values(this.store.data.guests || {});
@@ -177,6 +200,8 @@ export class InvitePanel {
     return this.store.data.lastPermissionCheck;
   }
   registerEvents() {
+    if (this.eventsRegistered) return;
+    this.eventsRegistered = true;
     const schedule = value => {
       if (!this.ready || value?.guild?.id !== INVITE_PANEL_GUILD_ID) return;
       clearTimeout(this.permissionTimer);
