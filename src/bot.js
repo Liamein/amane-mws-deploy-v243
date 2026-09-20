@@ -2175,9 +2175,12 @@ discord.once(Events.ClientReady, async (client) => {
   await mbtiAttemptStore.load();
   await mbtiPanelStore.load();
   await serverSettingsStore.load();
-  await client.application.commands.set(globalCommands);
-  if (config.discordGuildId) await client.guilds.fetch(config.discordGuildId).then((guild) => guild.commands.set([]));
-  console.log('Discord application commands synchronized.');
+  const commandsSynced = await runStartupTask('Discordコマンド同期', async () => {
+    await client.application.commands.set(globalCommands);
+    if (config.discordGuildId) await client.guilds.fetch(config.discordGuildId).then((guild) => guild.commands.set([]));
+    return true;
+  }, { fallback: false });
+  if (commandsSynced) console.log('Discord application commands synchronized.');
   await verificationSettingsStore.load();
   console.log('Discord core services are ready.');
   await runStartupTask('VC限定ゲスト機能の初期設定', () => guestAccess.start());
