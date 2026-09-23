@@ -4,6 +4,10 @@ export const DAY_MS = 24 * 60 * 60 * 1_000;
 export const INACTIVITY_KICK_DAYS = 15;
 export const INACTIVITY_WARNING_DAYS = [INACTIVITY_KICK_DAYS - 3];
 
+export function isInactivityMonitoringTarget({ userId, ownerId, isBot }) {
+  return !isBot && userId !== ownerId;
+}
+
 export function reachedInactivityDay(lastActiveAt, day, now = Date.now()) {
   return now - lastActiveAt >= day * DAY_MS;
 }

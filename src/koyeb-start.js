@@ -89,13 +89,14 @@ export async function startKoyebService({
     });
   });
 
-  function scheduleBotRestart() {
+  function scheduleBotRestart(exitCode) {
     if (stopping || restartTimer) return;
-    console.error('Discord bot process stopped. Retrying in 5 minutes while the health endpoint remains available.');
+    const delayMs = exitCode === 75 ? 10_000 : 5 * 60_000;
+    console.error(`Discord bot process stopped. Retrying in ${delayMs / 1_000} seconds while the health endpoint remains available.`);
     restartTimer = setTimeout(() => {
       restartTimer = null;
       startBotProcess();
-    }, 5 * 60_000);
+    }, delayMs);
   }
 
   function startBotProcess() {
@@ -119,7 +120,7 @@ export async function startKoyebService({
       resolveChildExit();
       if (!stopping) {
         console.error(`Discord bot process exited (code: ${code ?? 'none'}, signal: ${signal ?? 'none'}).`);
-        scheduleBotRestart();
+        scheduleBotRestart(code);
       }
     });
   }

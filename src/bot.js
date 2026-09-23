@@ -9,7 +9,7 @@ import { InstallConsentStore } from './install-consents.js';
 import { InviteAccessStore } from './invite-access.js';
 import { InvitePanel, VANITY_URL } from './invite-panel.js';
 import { GuestAccess } from './guest-access.js';
-import { ActivityStore, DAY_MS, INACTIVITY_KICK_DAYS, INACTIVITY_WARNING_DAYS, isInactivityKickDue, reachedInactivityDay } from './activity.js';
+import { ActivityStore, DAY_MS, INACTIVITY_KICK_DAYS, INACTIVITY_WARNING_DAYS, isInactivityKickDue, isInactivityMonitoringTarget, reachedInactivityDay } from './activity.js';
 import { VoiceMuteGuard } from './voice-mute-guard.js';
 import { loadConfig } from './config.js';
 import { findModerationViolation, ModerationStore, normalizedMessage } from './moderation.js';
@@ -67,6 +67,8 @@ const selfHealingState = {
   lastPanelRepairAt: 0,
   gatewayUnavailableSince: startedAt,
   lastGatewayRecoveryAt: 0,
+  gatewayRestartRequested: false,
+  lastGatewayReconnectLogAt: 0,
   lastFailureReportedAt: new Map(),
   scheduled: new Set(),
 };
@@ -108,6 +110,8 @@ const SELF_HEALING_PANEL_INTERVAL_MS = 30 * 60 * 1_000;
 const SELF_HEALING_CACHE_INTERVAL_MS = 60 * 60 * 1_000;
 const GATEWAY_RECOVERY_GRACE_MS = 2 * 60 * 1_000;
 const GATEWAY_RECOVERY_COOLDOWN_MS = 5 * 60 * 1_000;
+const GATEWAY_PROCESS_RESTART_MS = 10 * 60 * 1_000;
+const GATEWAY_RECONNECT_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const INVITE_ACCESS_GUILD_ID = '1414606962846601302';
 const INVITE_ACCESS_CHANNEL_ID = '1543522630584369243';
 const INVITE_ACCESS_CODE = 'DYjtfBm2ec';
@@ -552,17 +556,14 @@ async function recoverDiscordGateway() {
   })) return false;
 
   selfHealingState.lastGatewayRecoveryAt = now;
-  return runSelfHealingTask('通信', async () => {
-    // discord.js の標準再接続を2分間待っても戻らない場合だけ、
-    // 既存クライアントの接続を再開する。destroy() はRESTトークンも
-    // 破棄するため使わず、通常の短時間再接続と競合させない。
-    if (discord.isReady()) return;
-    discord.token = config.discordToken;
-    discord.rest.setToken(config.discordToken);
-    await discord.login(config.discordToken);
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    if (!discord.isReady()) throw new Error('Discord Gatewayの再接続を確認できませんでした。');
-  }, { attempts: 1 });
+  // discord.js already owns shard reconnection. A second login() competes with
+  // that state machine and can cause another reconnect loop.
+  if (now - selfHealingState.gatewayUnavailableSince < GATEWAY_PROCESS_RESTART_MS
+    || selfHealingState.gatewayRestartRequested) return false;
+  selfHealingState.gatewayRestartRequested = true;
+  console.error('Discord Gatewayが10分以上復旧しないため、Botプロセスを1回だけ再起動します。');
+  setTimeout(() => process.exit(75), 1_000).unref();
+  return true;
 }
 
 async function runSelfHealingCycle({ target = 'all' } = {}) {
@@ -1785,19 +1786,31 @@ async function handleModeration(message) {
 }
 
 function isInactivityExempt(member, guild) {
-  return member.user.bot
-    || member.id === guild.ownerId
-    || member.permissions.has(PermissionFlagsBits.Administrator)
-    || member.roles.cache.some((role) => config.inactivityExemptRoleIds.has(role.id));
+  return !isInactivityMonitoringTarget({ userId: member.id, ownerId: guild.ownerId, isBot: member.user.bot });
 }
 
 async function seedGuildActivity(guild) {
   if (!tracksGuild(guild)) return;
   let changed = false;
   try {
-    const members = await guild.members.fetch();
-    for (const member of members.values()) {
-      if (!member.user.bot) changed = activityStore.ensure(guild.id, member.id) || changed;
+    const monitoredUserIds = new Set();
+    let after;
+    while (true) {
+      const members = await retryRecoverable(
+        () => guild.members.list({ limit: 1_000, ...(after ? { after } : {}) }),
+        { attempts: 4, delayMs: 3_000 },
+      );
+      for (const member of members.values()) {
+        if (isInactivityExempt(member, guild)) continue;
+        monitoredUserIds.add(member.id);
+        changed = activityStore.ensure(guild.id, member.id) || changed;
+      }
+      if (members.size < 1_000) break;
+      after = [...members.keys()].at(-1);
+      if (!after) break;
+    }
+    for (const activity of activityStore.entries(guild.id)) {
+      if (!monitoredUserIds.has(activity.userId)) changed = activityStore.remove(guild.id, activity.userId) || changed;
     }
     if (changed) await activityStore.save();
   } catch (error) {
@@ -2214,9 +2227,12 @@ discord.once(Events.ClientReady, async (client) => {
   if (amaGuild) seedVoiceMuteGuard(amaGuild);
   voiceMuteTimer = setInterval(() => enforceVoiceMuteDisconnects().catch((error) => reportRuntimeError('VCミュート監視', error)), 15_000);
   if (config.inactivityAutomationEnabled) {
-    for (const guild of client.guilds.cache.values()) await seedGuildActivity(guild);
-    for (const guild of client.guilds.cache.values()) await runInactivityCheck(guild);
-    inactivityTimer = setInterval(() => Promise.all([...client.guilds.cache.values()].map((guild) => runInactivityCheck(guild))).catch((error) => console.error('非アクティブ監視エラー:', error)), 60 * 60 * 1_000);
+    const runInactivityCycle = async (guild) => {
+      await seedGuildActivity(guild);
+      await runInactivityCheck(guild);
+    };
+    for (const guild of client.guilds.cache.values()) await runInactivityCycle(guild);
+    inactivityTimer = setInterval(() => Promise.all([...client.guilds.cache.values()].map(runInactivityCycle)).catch((error) => console.error('非アクティブ監視エラー:', error)), 60 * 60 * 1_000);
   }
   console.log(`${client.user.tag} として起動しました。接続サーバー: ${[...client.guilds.cache.values()].map((guild) => `${guild.name} (${guild.id})`).join(', ')}`);
 });
@@ -2227,6 +2243,7 @@ discord.on(Events.Error, (error) => {
 });
 discord.on(Events.ShardReady, (shardId) => {
   selfHealingState.gatewayUnavailableSince = 0;
+  selfHealingState.gatewayRestartRequested = false;
   // destroy() を含む旧復旧処理で失われたREST認証も、接続確立時に必ず揃える。
   discord.token = config.discordToken;
   discord.rest.setToken(config.discordToken);
@@ -2234,7 +2251,11 @@ discord.on(Events.ShardReady, (shardId) => {
 });
 discord.on(Events.ShardReconnecting, (shardId) => {
   if (!selfHealingState.gatewayUnavailableSince) selfHealingState.gatewayUnavailableSince = Date.now();
-  console.warn(`Discord Gateway shard ${shardId} is reconnecting.`);
+  const now = Date.now();
+  if (now - selfHealingState.lastGatewayReconnectLogAt >= GATEWAY_RECONNECT_LOG_INTERVAL_MS) {
+    selfHealingState.lastGatewayReconnectLogAt = now;
+    console.warn(`Discord Gateway shard ${shardId} is reconnecting. discord.jsの標準復旧を待機します。`);
+  }
 });
 discord.on(Events.ShardDisconnect, (event, shardId) => {
   if (!selfHealingState.gatewayUnavailableSince) selfHealingState.gatewayUnavailableSince = Date.now();
