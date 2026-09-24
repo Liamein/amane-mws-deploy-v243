@@ -5,22 +5,19 @@ export const INACTIVITY_PANEL_CHANNEL_ID = '1542845920675233894';
 const ROWS_PER_EMBED = 18;
 const EMBEDS_PER_MESSAGE = 3;
 
-export function formatClock(milliseconds) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+export function formatRemainingHours(milliseconds) {
+  if (milliseconds <= 0) return '0時間';
+  return `${Math.ceil(milliseconds / 3_600_000)}時間`;
 }
 
 function statusFor(lastActiveAt, settings, now) {
   const elapsedMs = Math.max(0, now - lastActiveAt);
   const elapsedDays = Math.floor(elapsedMs / DAY_MS);
   const remainingMs = Math.max(0, settings.kickDays * DAY_MS - elapsedMs);
-  const remaining = formatClock(remainingMs);
-  if (elapsedDays >= inactivityWarningDay(settings)) return { icon: '🔴', label: `期限間近・あと${remaining}`, elapsedMs };
-  if (elapsedDays >= Math.max(1, Math.floor(settings.kickDays / 2))) return { icon: '🟡', label: `あと${remaining}`, elapsedMs };
-  return { icon: '🟢', label: `あと${remaining}`, elapsedMs };
+  const remaining = formatRemainingHours(remainingMs);
+  if (elapsedDays >= inactivityWarningDay(settings)) return { icon: '🔴', label: `期限間近・あと${remaining}` };
+  if (elapsedDays >= Math.max(1, Math.floor(settings.kickDays / 2))) return { icon: '🟡', label: `あと${remaining}` };
+  return { icon: '🟢', label: `あと${remaining}` };
 }
 
 export function buildInactivityPanelPayloads({ guild, activities, kicked, settings = DEFAULT_INACTIVITY_SETTINGS, now = Date.now() }) {
@@ -28,11 +25,11 @@ export function buildInactivityPanelPayloads({ guild, activities, kicked, settin
     .sort((left, right) => left.lastActiveAt - right.lastActiveAt)
     .map((entry) => {
       const status = statusFor(entry.lastActiveAt, settings, now);
-      return `${status.icon} <@${entry.userId}>\n　最終活動 **${formatClock(status.elapsedMs)}前**　•　**${status.label}**`;
+      return `${status.icon} <@${entry.userId}>\n　最終活動 <t:${Math.floor(entry.lastActiveAt / 1_000)}:f>　•　**${status.label}**`;
     });
   const kickedRows = [...kicked]
     .sort((left, right) => right.kickedAt - left.kickedAt)
-    .map((entry) => `⚫ **${entry.displayName || entry.username || entry.userId}**（\`${entry.userId}\`）\n　Kick済み　•　${entry.dmSent ? 'DM送信済み' : 'DM送信不可'}　•　<t:${Math.floor(entry.kickedAt / 1_000)}:R>`);
+    .map((entry) => `⚫ **${entry.displayName || entry.username || entry.userId}**（\`${entry.userId}\`）\n　Kick済み　•　${entry.dmSent ? 'DM送信済み' : 'DM送信不可'}　•　退出日時 <t:${Math.floor(entry.kickedAt / 1_000)}:f>`);
 
   const sections = [];
   for (let index = 0; index < activeRows.length; index += ROWS_PER_EMBED) {
