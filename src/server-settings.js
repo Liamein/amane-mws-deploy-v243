@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
-const DEFAULTS = Object.freeze({ auditLogChannelId: null, memberLogChannelId: null, lastOperationsDigestAt: null, lastPanelRepairAt: null, lastPanelRepairSummary: null });
+const DEFAULTS = Object.freeze({ auditLogChannelId: null, memberLogChannelId: null, lastPanelRepairAt: null, lastPanelRepairSummary: null });
 
 function normalizeSettings(value) {
   return Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, value?.[key] ?? DEFAULTS[key]]));
@@ -32,6 +32,5 @@ export class ServerSettingsStore {
   get(guildId) { return normalizeSettings(this.guilds[guildId]); }
   setMemberLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), memberLogChannelId: channelId }; }
   setAuditLogChannel(guildId, channelId) { this.guilds[guildId] = { ...this.get(guildId), auditLogChannelId: channelId }; }
-  markOperationsDigest(guildId, timestamp) { this.guilds[guildId] = { ...this.get(guildId), lastOperationsDigestAt: timestamp }; }
   markPanelRepair(guildId, { timestamp = Date.now(), summary = null } = {}) { this.guilds[guildId] = { ...this.get(guildId), lastPanelRepairAt: timestamp, lastPanelRepairSummary: summary }; }
 }

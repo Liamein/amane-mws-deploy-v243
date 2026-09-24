@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildInactivityPanelPayloads } from '../src/inactivity-panel.js';
+import { buildInactivityPanelPayloads, formatClock } from '../src/inactivity-panel.js';
+
+test('formats durations as total H:mm:ss without a day unit', () => {
+  assert.equal(formatClock((8 * 24 + 3) * 3_600_000 + 4 * 60_000 + 5_000), '195:04:05');
+});
 
 test('panel separates monitored and kicked members and reports DM outcome truthfully', () => {
   const now = Date.UTC(2026, 8, 24);
@@ -16,7 +20,9 @@ test('panel separates monitored and kicked members and reports DM outcome truthf
   });
   const json = payloads.flatMap((payload) => payload.embeds.map((embed) => embed.toJSON()));
   const rendered = json.map((embed) => `${embed.title || ''}\n${embed.description || ''}`).join('\n');
-  assert.match(rendered, /期限間近・あと6日/);
+  assert.match(rendered, /最終活動 \*\*336:00:00前\*\*/);
+  assert.match(rendered, /期限間近・あと144:00:00/);
+  assert.doesNotMatch(rendered, /最終活動.*日/);
   assert.match(rendered, /Kick済み.*DM送信済み/s);
   assert.match(rendered, /Kick済み.*DM送信不可/s);
   assert.equal(payloads[0].allowedMentions.parse.length, 0);

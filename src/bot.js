@@ -64,7 +64,6 @@ let dmHistoryTimer;
 let voiceMuteTimer;
 let licenseTimer;
 let panelRepairTimer;
-let operationsDigestTimer;
 let selfHealingTimer;
 const selfHealingState = {
   inFlight: new Set(),
@@ -98,8 +97,6 @@ const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300�
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
 const INACTIVITY_MANAGER_USER_ID = '1030896490379476992';
-// Keep operational summaries in their dedicated channel.
-const OPERATIONS_DIGEST_CHANNEL_ID = '1543158103330267216';
 const PURCHASE_DAILY_BUTTON_LIMIT = 3;
 const LICENSE_PLANS = Object.freeze({
   monthly: { label: '1か月', durationMs: 30 * 24 * 60 * 60 * 1_000 },
@@ -110,7 +107,6 @@ const LICENSE_PLANS = Object.freeze({
 });
 const LICENSE_EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const PANEL_REPAIR_INTERVAL_MS = 6 * 60 * 60 * 1_000;
-const OPERATIONS_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 const SELF_HEALING_INTERVAL_MS = 5 * 60 * 1_000;
 const SELF_HEALING_PANEL_INTERVAL_MS = 30 * 60 * 1_000;
 const SELF_HEALING_CACHE_INTERVAL_MS = 60 * 60 * 1_000;
@@ -1568,41 +1564,6 @@ async function repairManagedPanels() {
   return summary;
 }
 
-async function sendOperationsDigest({ force = false, panelSummary = null } = {}) {
-  // Keep the operations notice available even when a legacy cloud environment
-  // does not yet have DISCORD_GUILD_ID configured.
-  const guild = discord.guilds.cache.get(config.discordGuildId) || discord.guilds.cache.get(AMA_GUILD_ID);
-  if (!guild) return false;
-  const settings = serverSettingsStore.get(guild.id);
-  if (!force && settings.lastOperationsDigestAt && Date.now() - settings.lastOperationsDigestAt < OPERATIONS_DIGEST_INTERVAL_MS) return false;
-  const channel = await getTextChannel(OPERATIONS_DIGEST_CHANNEL_ID);
-  if (!channel?.isSendable()) return false;
-  const now = Date.now();
-  const licenses = commandAccessStore.listDetails(now).filter((license) => !license.owner);
-  const expiringSoon = licenses.filter((license) => license.expiresAt && license.expiresAt - now <= 7 * DAY_MS).length;
-  const active = licenses.filter((license) => license.active).length;
-  const activeTickets = Object.values(purchaseTicketStore.get(guild.id).tickets).filter((ticket) => ticket.status === 'open').length;
-  const repair = panelSummary || settings.lastPanelRepairSummary || '未実行';
-  const payload = { embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('📊 あまね — 運用ダイジェスト')
-    .setDescription('定期監視の結果です。個別のユーザー内容・DM本文・購入情報は含めません。')
-    .addFields(
-      { name: '🟢 稼働状態', value: `Gateway接続中｜応答遅延: ${discord.ws.ping >= 0 ? `${discord.ws.ping}ms` : '測定中'}` },
-      { name: '🧩 パネル自己修復', value: repair },
-      { name: '🔐 利用権', value: `有効 ${active}件｜7日以内の期限 ${expiringSoon}件\n期限確認: 1時間ごと` },
-      { name: '🎫 対応待ちチケット', value: `${activeTickets}件`, inline: true },
-      { name: '🧹 自動保守', value: 'DM履歴の定期削除・変換キャッシュ削除・状態パネル更新を継続中' },
-    ).setFooter({ text: '次回の運用ダイジェストは約24時間後です。' }).setTimestamp(now)], allowedMentions: { parse: [] } };
-  // 運用ダイジェストも管理対象パネルとして同じ投稿を更新する。起動のたびに
-  // 新しい通知を増やさず、直近のBot投稿がある場合だけ安全に上書きする。
-  const recent = await channel.messages.fetch({ limit: 100 });
-  const existing = [...recent.values()].find((message) => message.author.id === discord.user.id && message.embeds[0]?.title === '📊 あまね — 運用ダイジェスト');
-  if (existing) await existing.edit(payload);
-  else await channel.send(payload);
-  serverSettingsStore.markOperationsDigest(guild.id, now);
-  await serverSettingsStore.save();
-  return true;
-}
-
 function isVoiceMuteExempt(member, guild) {
   return !member
     || member.user.bot
@@ -2258,7 +2219,7 @@ discord.once(Events.ClientReady, async (client) => {
   void invitePanel.start()
     .then(() => console.log('Invite panel is ready.'))
     .catch((error) => reportRuntimeError('招待パネルの初期設定', error));
-  const initialPanelRepair = await repairManagedPanels();
+  await repairManagedPanels();
   selfHealingState.lastPanelRepairAt = Date.now();
   await publishMediaConverterPanel(client).catch((error) => console.warn(`メディア変換パネルを更新できません:`, error.message));
   await cleanupMediaTempCache().catch((error) => reportRuntimeError('変換キャッシュの削除', error));
@@ -2279,8 +2240,6 @@ discord.once(Events.ClientReady, async (client) => {
   licenseTimer = setInterval(() => expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error)), LICENSE_EXPIRY_CHECK_INTERVAL_MS);
   // パネル・変換パネル・キャッシュは対象限定の自己復旧監視でまとめて保守する。
   startSelfHealingMonitor();
-  await sendOperationsDigest({ force: true, panelSummary: `${initialPanelRepair.updated}更新 / ${initialPanelRepair.recreated}再作成 / ${initialPanelRepair.unavailable}要確認` }).catch((error) => reportRuntimeError('運用ダイジェスト', error));
-  operationsDigestTimer = setInterval(() => sendOperationsDigest().catch((error) => reportRuntimeError('運用ダイジェスト', error)), OPERATIONS_DIGEST_INTERVAL_MS);
   const amaGuild = client.guilds.cache.get(AMA_GUILD_ID);
   if (amaGuild) seedVoiceMuteGuard(amaGuild);
   voiceMuteTimer = setInterval(() => enforceVoiceMuteDisconnects().catch((error) => reportRuntimeError('VCミュート監視', error)), 15_000);

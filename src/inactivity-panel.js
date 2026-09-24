@@ -5,12 +5,22 @@ export const INACTIVITY_PANEL_CHANNEL_ID = '1542845920675233894';
 const ROWS_PER_EMBED = 18;
 const EMBEDS_PER_MESSAGE = 3;
 
+export function formatClock(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 function statusFor(lastActiveAt, settings, now) {
-  const elapsedDays = Math.max(0, Math.floor((now - lastActiveAt) / DAY_MS));
-  const remainingDays = Math.max(0, settings.kickDays - elapsedDays);
-  if (elapsedDays >= inactivityWarningDay(settings)) return { icon: '🔴', label: `期限間近・あと${remainingDays}日`, elapsedDays };
-  if (elapsedDays >= Math.max(1, Math.floor(settings.kickDays / 2))) return { icon: '🟡', label: `あと${remainingDays}日`, elapsedDays };
-  return { icon: '🟢', label: `あと${remainingDays}日`, elapsedDays };
+  const elapsedMs = Math.max(0, now - lastActiveAt);
+  const elapsedDays = Math.floor(elapsedMs / DAY_MS);
+  const remainingMs = Math.max(0, settings.kickDays * DAY_MS - elapsedMs);
+  const remaining = formatClock(remainingMs);
+  if (elapsedDays >= inactivityWarningDay(settings)) return { icon: '🔴', label: `期限間近・あと${remaining}`, elapsedMs };
+  if (elapsedDays >= Math.max(1, Math.floor(settings.kickDays / 2))) return { icon: '🟡', label: `あと${remaining}`, elapsedMs };
+  return { icon: '🟢', label: `あと${remaining}`, elapsedMs };
 }
 
 export function buildInactivityPanelPayloads({ guild, activities, kicked, settings = DEFAULT_INACTIVITY_SETTINGS, now = Date.now() }) {
@@ -18,7 +28,7 @@ export function buildInactivityPanelPayloads({ guild, activities, kicked, settin
     .sort((left, right) => left.lastActiveAt - right.lastActiveAt)
     .map((entry) => {
       const status = statusFor(entry.lastActiveAt, settings, now);
-      return `${status.icon} <@${entry.userId}>\n　最終活動 <t:${Math.floor(entry.lastActiveAt / 1_000)}:R>　•　**${status.label}**`;
+      return `${status.icon} <@${entry.userId}>\n　最終活動 **${formatClock(status.elapsedMs)}前**　•　**${status.label}**`;
     });
   const kickedRows = [...kicked]
     .sort((left, right) => right.kickedAt - left.kickedAt)
