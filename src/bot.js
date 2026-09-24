@@ -9,7 +9,7 @@ import { InstallConsentStore } from './install-consents.js';
 import { InviteAccessStore } from './invite-access.js';
 import { InvitePanel, VANITY_URL } from './invite-panel.js';
 import { GuestAccess } from './guest-access.js';
-import { ActivityStore, DAY_MS, INACTIVITY_KICK_DAYS, INACTIVITY_WARNING_DAYS, isInactivityKickDue, isInactivityMonitoringTarget, reachedInactivityDay } from './activity.js';
+import { ActivityStore, inactivityWarningDay, isInactivityKickDue, isInactivityMonitoringTarget, reachedInactivityDay } from './activity.js';
 import { VoiceMuteGuard } from './voice-mute-guard.js';
 import { loadConfig } from './config.js';
 import { findModerationViolation, ModerationStore, normalizedMessage } from './moderation.js';
@@ -97,6 +97,7 @@ const errorDeduper = createErrorDeduper();
 const PURCHASE_PLANS = Object.freeze({ monthly: { label: '1か月', price: '300円' }, quarterly: { label: '3か月', price: '600円' }, halfyear: { label: '6か月', price: '1,200円' }, lifetime: { label: '永久利用権', price: '3,000円' } });
 const PURCHASE_LOG_CHANNEL_ID = '1417192073026605057';
 const INACTIVITY_LOG_CHANNEL_ID = '1414606963920338951';
+const INACTIVITY_MANAGER_USER_ID = '1030896490379476992';
 // Keep operational summaries in their dedicated channel.
 const OPERATIONS_DIGEST_CHANNEL_ID = '1543158103330267216';
 const PURCHASE_DAILY_BUTTON_LIMIT = 3;
@@ -1689,7 +1690,7 @@ function seedVoiceMuteGuard(guild) {
 }
 
 async function recordActivity(guild, user) {
-  if (!tracksGuild(guild) || !user || user.bot) return;
+  if (!tracksGuild(guild) || !user || !isInactivityMonitoringTarget({ userId: user.id, isBot: user.bot, excludedUserIds: [INACTIVITY_MANAGER_USER_ID] })) return;
   activityStore.touch(guild.id, user.id);
   await activityStore.save();
   requestInactivityPanelRefresh(guild);
@@ -1699,7 +1700,7 @@ function inactivityKickKey(guildId, userId) {
   return `${guildId}:${userId}`;
 }
 
-async function writeInactivityKickLog(member, activity) {
+async function writeInactivityKickLog(member, activity, settings) {
   const channel = await getTextChannel(INACTIVITY_LOG_CHANNEL_ID);
   if (!channel?.isSendable()) throw new Error(`非アクティブ退出ログの送信先 ${INACTIVITY_LOG_CHANNEL_ID} が利用できません。`);
   await channel.send({
@@ -1708,7 +1709,7 @@ async function writeInactivityKickLog(member, activity) {
       .setColor(0xed4245)
       .setTitle('📤 非アクティブのため退出しました')
       .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
-      .setDescription(`${member.user} は${INACTIVITY_KICK_DAYS}日間アクティブが確認できなかったため、自動的に退出しました。再入室は可能です。`)
+      .setDescription(`${member.user} は${settings.kickDays}日間アクティブが確認できなかったため、自動的に退出しました。再入室は可能です。`)
       .addFields(
         { name: 'ユーザー', value: `${member.user.tag}（\`${member.id}\`）` },
         { name: '最終アクティブ', value: `<t:${Math.floor(activity.lastActiveAt / 1_000)}:F>`, inline: true },
@@ -1792,7 +1793,7 @@ async function handleModeration(message) {
 }
 
 function isInactivityExempt(member, guild) {
-  return !isInactivityMonitoringTarget({ userId: member.id, ownerId: guild.ownerId, isBot: member.user.bot });
+  return !isInactivityMonitoringTarget({ userId: member.id, isBot: member.user.bot, excludedUserIds: [INACTIVITY_MANAGER_USER_ID] });
 }
 
 async function refreshInactivityPanel(guild) {
@@ -1802,7 +1803,7 @@ async function refreshInactivityPanel(guild) {
     const channel = guild.channels.cache.get(INACTIVITY_PANEL_CHANNEL_ID)
       || await guild.channels.fetch(INACTIVITY_PANEL_CHANNEL_ID).catch(() => null);
     if (!channel?.isTextBased() || !channel.isSendable()) throw new Error(`非アクティブ監視パネルの送信先 ${INACTIVITY_PANEL_CHANNEL_ID} が利用できません。`);
-    const payloads = buildInactivityPanelPayloads({ guild, activities: activityStore.entries(guild.id), kicked: activityStore.kickedEntries(guild.id) });
+    const payloads = buildInactivityPanelPayloads({ guild, activities: activityStore.entries(guild.id), kicked: activityStore.kickedEntries(guild.id), settings: activityStore.getSettings(guild.id) });
     const previousIds = activityStore.getPanelMessageIds(guild.id);
     const nextIds = [];
     for (let index = 0; index < payloads.length; index += 1) {
@@ -1872,8 +1873,10 @@ async function runInactivityCheck(guild) {
   }
 
   let changed = false;
+  const settings = activityStore.getSettings(guild.id);
+  const warningDay = inactivityWarningDay(settings);
   for (const activity of activityStore.entries(guild.id)) {
-    if (!reachedInactivityDay(activity.lastActiveAt, INACTIVITY_WARNING_DAYS[0])) continue;
+    if (!reachedInactivityDay(activity.lastActiveAt, warningDay)) continue;
     let member;
     try {
       member = await guild.members.fetch(activity.userId);
@@ -1883,17 +1886,16 @@ async function runInactivityCheck(guild) {
     }
     if (isInactivityExempt(member, guild)) continue;
 
-    const warningDay = [...INACTIVITY_WARNING_DAYS].reverse().find((day) => reachedInactivityDay(activity.lastActiveAt, day) && !activity.notifiedDays.includes(day));
-    if (warningDay) {
-      const daysUntilKick = INACTIVITY_KICK_DAYS - warningDay;
+    const shouldWarn = reachedInactivityDay(activity.lastActiveAt, warningDay) && !activity.notifiedDays.includes(warningDay);
+    if (shouldWarn) {
       try {
         await sendTrackedDm(member, {
           embeds: [new EmbedBuilder()
             .setColor(0xfaa61a)
             .setTitle('⚠️ 非アクティブによる自動退出の事前案内')
-            .setDescription(`AmAサーバーで${warningDay}日間の活動が確認できません。あと${daysUntilKick}日以内に活動がない場合、サーバーから自動的にKickされます。`)
+            .setDescription(`AmAサーバーで${warningDay}日間の活動が確認できません。あと${settings.warningBeforeDays}日以内に活動がない場合、サーバーから自動的にKickされます。`)
             .addFields({ name: '活動として記録される操作', value: 'メッセージ送信 / メッセージへのリアクション / VCへの参加・状態変更 / Botコマンド・パネル操作' })
-            .setFooter({ text: 'いずれかの操作を行うと15日間のカウントがリセットされます。' })
+            .setFooter({ text: `いずれかの操作を行うと${settings.kickDays}日間のカウントがリセットされます。` })
             .setTimestamp()],
         });
       } catch (error) {
@@ -1903,7 +1905,7 @@ async function runInactivityCheck(guild) {
       continue;
     }
 
-    if (isInactivityKickDue(activity)) {
+    if (isInactivityKickDue(activity, settings)) {
       if (!member.kickable) {
         console.error(`非アクティブKickを実行できません: ${member.user.tag} よりBotロールを上位に配置してください。`);
         continue;
@@ -1914,7 +1916,7 @@ async function runInactivityCheck(guild) {
           embeds: [new EmbedBuilder()
             .setColor(0xed4245)
             .setTitle('📤 非アクティブのためサーバーから退出しました')
-            .setDescription(`AmAサーバーで${INACTIVITY_KICK_DAYS}日間の活動が確認できなかったため、自動的に退出しました。Kickは参加禁止ではないため、下のカスタムリンクからいつでも再参加できます。`)
+            .setDescription(`AmAサーバーで${settings.kickDays}日間の活動が確認できなかったため、自動的に退出しました。Kickは参加禁止ではないため、下のカスタムリンクからいつでも再参加できます。`)
             .addFields({ name: '再参加リンク', value: `[AmAへ再参加する](${VANITY_URL})` })
             .setFooter({ text: '再参加後、活動カウントは新しく開始されます。' })
             .setTimestamp()],
@@ -1925,7 +1927,7 @@ async function runInactivityCheck(guild) {
       const kickKey = inactivityKickKey(guild.id, member.id);
       inactivityKickContexts.add(kickKey);
       try {
-        await member.kick(`${INACTIVITY_KICK_DAYS}日間アクティブではなかったため`);
+        await member.kick(`${settings.kickDays}日間アクティブではなかったため`);
         activityStore.remove(guild.id, activity.userId);
         activityStore.recordKick(guild.id, activity.userId, {
           username: member.user.username,
@@ -1935,7 +1937,7 @@ async function runInactivityCheck(guild) {
           dmSent,
         });
         changed = true;
-        await writeInactivityKickLog(member, activity).catch((error) => reportRuntimeError('非アクティブ退出ログ', error, [{ name: '対象ユーザーID', value: `\`${member.id}\`` }]));
+        await writeInactivityKickLog(member, activity, settings).catch((error) => reportRuntimeError('非アクティブ退出ログ', error, [{ name: '対象ユーザーID', value: `\`${member.id}\`` }]));
         console.log(`非アクティブKick: ${member.user.tag}`);
         requestInactivityPanelRefresh(guild, 0);
       } catch (error) {
@@ -2369,8 +2371,10 @@ discord.on(Events.GuildMemberAdd, async (member) => {
     ? sendInvitePurchaseDm(member).catch((error) => console.warn(`招待限定DMを送れませんでした (${member.user.tag}):`, error.message))
     : sendVerificationDm(member).catch((error) => console.warn(`入室認証DMを送れませんでした (${member.user.tag}):`, error.message))];
   if (tracksGuild(member.guild)) {
-    activityStore.restoreKickedUser(member.guild.id, member.id);
-    activityStore.touch(member.guild.id, member.id);
+    if (!isInactivityExempt(member, member.guild)) {
+      activityStore.restoreKickedUser(member.guild.id, member.id);
+      activityStore.touch(member.guild.id, member.id);
+    }
     tasks.push(activityStore.save(), writeMemberLog(member, true).catch((error) => console.warn(`入室ログを送れませんでした (${member.user.tag}):`, error.message)));
     requestInactivityPanelRefresh(member.guild, 0);
   }
@@ -2404,6 +2408,26 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand() && interaction.commandName === '利用権') {
       if (!isPrimaryBotOwner(interaction.user.id)) return interaction.reply({ ephemeral: true, content: 'このコマンドはBot所有者だけが実行できます。' });
       return interaction.reply(buildUsageAccessNotice());
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('inactivity:save:')) {
+      if (interaction.user.id !== INACTIVITY_MANAGER_USER_ID) return interaction.reply({ ephemeral: true, content: 'この設定を変更できるのは指定管理者だけです。' });
+      if (interaction.guildId !== AMA_GUILD_ID || interaction.channelId !== INACTIVITY_PANEL_CHANNEL_ID) throw new Error('この設定は非アクティブ監視パネルから変更してください。');
+      await interaction.deferReply({ ephemeral: true });
+      const setting = interaction.customId.split(':')[2];
+      const days = readWholeNumber(interaction.fields.getTextInputValue('days'), '日数', 1, 365);
+      const current = activityStore.getSettings(interaction.guildId);
+      if (setting === 'kick') {
+        if (days < 2) throw new Error('自動退出の期間は2〜365日で指定してください。');
+        if (current.warningBeforeDays >= days) throw new Error(`期限前DMは現在${current.warningBeforeDays}日前です。自動退出期間より短くなるよう、先に期限前DMの日数を変更してください。`);
+        activityStore.setSettings(interaction.guildId, { ...current, kickDays: days });
+      } else if (setting === 'warning') {
+        if (days >= current.kickDays) throw new Error(`期限前DMは自動退出期間（${current.kickDays}日）より短い日数を指定してください。`);
+        activityStore.setSettings(interaction.guildId, { ...current, warningBeforeDays: days });
+      } else throw new Error('変更対象が正しくありません。');
+      await activityStore.save();
+      await refreshInactivityPanel(interaction.guild);
+      const updated = activityStore.getSettings(interaction.guildId);
+      return interaction.editReply({ content: `✅ 自動退出を **${updated.kickDays}日**、期限前DMを **${updated.warningBeforeDays}日前** に更新しました。` });
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('dm-support:reply:')) {
       if (!commandAccessStore.isOwner(interaction.user.id)) throw new Error('DM対応は登録管理者だけが実行できます。');
@@ -2464,6 +2488,25 @@ discord.on(Events.InteractionCreate, async (interaction) => {
       if (!commandAccessStore.isOwner(interaction.user.id)) throw new Error('DM対応は登録管理者だけが実行できます。');
       const userId = interaction.customId.split(':')[2];
       return interaction.showModal(new ModalBuilder().setCustomId(`dm-support:reply:${userId}`).setTitle('DMへ返信').addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('content').setLabel('返信内容').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(2_000))));
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('inactivity:configure:')) {
+      if (interaction.user.id !== INACTIVITY_MANAGER_USER_ID) return interaction.reply({ ephemeral: true, content: 'この設定を変更できるのは指定管理者だけです。' });
+      if (interaction.guildId !== AMA_GUILD_ID || interaction.channelId !== INACTIVITY_PANEL_CHANNEL_ID) throw new Error('この設定は非アクティブ監視パネルから変更してください。');
+      const setting = interaction.customId.split(':')[2];
+      const current = activityStore.getSettings(interaction.guildId);
+      const isKick = setting === 'kick';
+      if (!isKick && setting !== 'warning') throw new Error('変更対象が正しくありません。');
+      return interaction.showModal(new ModalBuilder()
+        .setCustomId(`inactivity:save:${setting}`)
+        .setTitle(isKick ? '自動退出の期間を変更' : '期限前DMの日数を変更')
+        .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder()
+          .setCustomId('days')
+          .setLabel(isKick ? '活動がない状態で退出させる日数' : '自動退出の何日前にDMするか')
+          .setPlaceholder(isKick ? '2〜365' : `1〜${current.kickDays - 1}`)
+          .setValue(String(isKick ? current.kickDays : current.warningBeforeDays))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(3))));
     }
     if (interaction.isButton() && interaction.customId.startsWith('dm-support:close:')) {
       if (!commandAccessStore.isOwner(interaction.user.id)) throw new Error('DM対応は登録管理者だけが実行できます。');

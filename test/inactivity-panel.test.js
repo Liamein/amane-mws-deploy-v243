@@ -7,6 +7,7 @@ test('panel separates monitored and kicked members and reports DM outcome truthf
   const payloads = buildInactivityPanelPayloads({
     guild: { name: 'AmA', iconURL: () => null },
     now,
+    settings: { kickDays: 20, warningBeforeDays: 6 },
     activities: [{ userId: '123', lastActiveAt: now - 14 * 86_400_000 }],
     kicked: [
       { userId: '456', displayName: 'sent', kickedAt: now - 1_000, dmSent: true },
@@ -15,8 +16,10 @@ test('panel separates monitored and kicked members and reports DM outcome truthf
   });
   const json = payloads.flatMap((payload) => payload.embeds.map((embed) => embed.toJSON()));
   const rendered = json.map((embed) => `${embed.title || ''}\n${embed.description || ''}`).join('\n');
-  assert.match(rendered, /期限間近・あと1日/);
+  assert.match(rendered, /期限間近・あと6日/);
   assert.match(rendered, /Kick済み.*DM送信済み/s);
   assert.match(rendered, /Kick済み.*DM送信不可/s);
   assert.equal(payloads[0].allowedMentions.parse.length, 0);
+  assert.equal(payloads[0].components[0].components[0].data.custom_id, 'inactivity:configure:kick');
+  assert.equal(payloads[0].components[0].components[1].data.custom_id, 'inactivity:configure:warning');
 });

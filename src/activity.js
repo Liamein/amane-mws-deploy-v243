@@ -2,23 +2,25 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export const DAY_MS = 24 * 60 * 60 * 1_000;
-export const INACTIVITY_KICK_DAYS = 15;
-export const INACTIVITY_WARNING_DAYS = [INACTIVITY_KICK_DAYS - 3];
+export const DEFAULT_INACTIVITY_SETTINGS = Object.freeze({ kickDays: 15, warningBeforeDays: 3 });
 
-export function isInactivityMonitoringTarget({ userId, ownerId, isBot }) {
-  return !isBot && userId !== ownerId;
+export function isInactivityMonitoringTarget({ userId, isBot, excludedUserIds = [] }) {
+  return !isBot && !excludedUserIds.includes(userId);
 }
 
 export function reachedInactivityDay(lastActiveAt, day, now = Date.now()) {
   return now - lastActiveAt >= day * DAY_MS;
 }
 
-export function isInactivityKickDue(activity, now = Date.now()) {
-  const warningGraceDays = INACTIVITY_KICK_DAYS - INACTIVITY_WARNING_DAYS.at(-1);
+export function inactivityWarningDay(settings) {
+  return settings.kickDays - settings.warningBeforeDays;
+}
+
+export function isInactivityKickDue(activity, settings = DEFAULT_INACTIVITY_SETTINGS, now = Date.now()) {
   return Boolean(activity
-    && reachedInactivityDay(activity.lastActiveAt, INACTIVITY_KICK_DAYS, now)
+    && reachedInactivityDay(activity.lastActiveAt, settings.kickDays, now)
     && Number.isFinite(activity.warningSentAt)
-    && reachedInactivityDay(activity.warningSentAt, warningGraceDays, now));
+    && reachedInactivityDay(activity.warningSentAt, settings.warningBeforeDays, now));
 }
 
 export class ActivityStore {
@@ -27,6 +29,7 @@ export class ActivityStore {
     this.activities = {};
     this.kicked = {};
     this.panelMessages = {};
+    this.settings = {};
     this.saveInFlight = null;
     this.saveRequested = false;
   }
@@ -37,6 +40,7 @@ export class ActivityStore {
       this.activities = {};
       this.kicked = {};
       this.panelMessages = {};
+      this.settings = {};
       const activitySource = saved?.activities && typeof saved.activities === 'object' ? saved.activities : saved;
       if (activitySource && typeof activitySource === 'object' && !Array.isArray(activitySource)) {
         for (const [guildId, members] of Object.entries(activitySource)) {
@@ -65,6 +69,16 @@ export class ActivityStore {
         this.panelMessages = Object.fromEntries(Object.entries(saved.panelMessages)
           .map(([guildId, ids]) => [guildId, Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []]));
       }
+      if (saved?.settings && typeof saved.settings === 'object') {
+        for (const [guildId, settings] of Object.entries(saved.settings)) {
+          const kickDays = Number(settings?.kickDays);
+          const warningBeforeDays = Number(settings?.warningBeforeDays);
+          if (Number.isInteger(kickDays) && kickDays >= 2 && kickDays <= 365
+            && Number.isInteger(warningBeforeDays) && warningBeforeDays >= 1 && warningBeforeDays < kickDays) {
+            this.settings[guildId] = { kickDays, warningBeforeDays };
+          }
+        }
+      }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       this.activities = {};
@@ -77,7 +91,7 @@ export class ActivityStore {
     const persist = async () => {
       do {
         this.saveRequested = false;
-        const snapshot = JSON.stringify({ activities: this.activities, kicked: this.kicked, panelMessages: this.panelMessages }, null, 2);
+        const snapshot = JSON.stringify({ activities: this.activities, kicked: this.kicked, panelMessages: this.panelMessages, settings: this.settings }, null, 2);
         const directory = this.filePath instanceof URL ? new URL('.', this.filePath) : dirname(this.filePath);
         await mkdir(directory, { recursive: true });
         await writeFile(this.filePath, snapshot, 'utf8');
@@ -148,5 +162,17 @@ export class ActivityStore {
 
   setPanelMessageIds(guildId, messageIds) {
     this.panelMessages[guildId] = [...new Set(messageIds.filter((id) => typeof id === 'string'))];
+  }
+
+  getSettings(guildId) {
+    return { ...DEFAULT_INACTIVITY_SETTINGS, ...(this.settings[guildId] || {}) };
+  }
+
+  setSettings(guildId, settings) {
+    this.settings[guildId] = { ...settings };
+    for (const activity of Object.values(this.activities[guildId] || {})) {
+      activity.notifiedDays = [];
+      activity.warningSentAt = null;
+    }
   }
 }
