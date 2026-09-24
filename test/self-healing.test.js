@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { retryRecoverable, shouldRecoverGateway } from '../src/self-healing.js';
+import { isGatewayOperational, retryRecoverable, shouldRecoverGateway } from '../src/self-healing.js';
+
+test('a reconnecting shard is unavailable even while discord.js still reports ready', () => {
+  assert.equal(isGatewayOperational({ isReady: true, unavailableSince: 0 }), true);
+  assert.equal(isGatewayOperational({ isReady: true, unavailableSince: 123 }), false);
+  assert.equal(isGatewayOperational({ isReady: false, unavailableSince: 0 }), false);
+});
 
 test('retryRecoverable retries a temporary failure and returns normally', async () => {
   let calls = 0;

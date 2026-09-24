@@ -20,7 +20,7 @@ import { cleanupMediaTempCache, handleMediaConverterInteraction, isMediaConverte
 import { RecruitmentStore } from './recruitment.js';
 import { PurchaseTicketStore } from './purchase-tickets.js';
 import { ServerSettingsStore } from './server-settings.js';
-import { retryRecoverable, shouldRecoverGateway, shouldRunMaintenance } from './self-healing.js';
+import { isGatewayOperational, retryRecoverable, shouldRecoverGateway, shouldRunMaintenance } from './self-healing.js';
 import { chooseRandom, formatDuration, parseChoices } from './utils.js';
 import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './verification-settings.js';
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
@@ -60,6 +60,7 @@ let inactivityTimer;
 let inactivityPanelTimer;
 let inactivityPanelRefreshTimer;
 let inactivityPanelRefreshInFlight = null;
+let coreRuntimeReady = false;
 let dmHistoryTimer;
 let voiceMuteTimer;
 let licenseTimer;
@@ -548,8 +549,12 @@ async function recoverDiscordGateway() {
   if (!discord.isReady() && !selfHealingState.gatewayUnavailableSince) {
     selfHealingState.gatewayUnavailableSince = now;
   }
-  if (!shouldRecoverGateway({
+  const gatewayOperational = isGatewayOperational({
     isReady: discord.isReady(),
+    unavailableSince: selfHealingState.gatewayUnavailableSince,
+  });
+  if (!shouldRecoverGateway({
+    isReady: gatewayOperational,
     now,
     unavailableSince: selfHealingState.gatewayUnavailableSince,
     lastRecoveryAt: selfHealingState.lastGatewayRecoveryAt,
@@ -571,7 +576,9 @@ async function recoverDiscordGateway() {
 async function runSelfHealingCycle({ target = 'all' } = {}) {
   const now = Date.now();
   const gatewayRecovered = await recoverDiscordGateway();
-  if (!discord.isReady()) return { gatewayRecovered, panels: false, cache: false };
+  if (!isGatewayOperational({ isReady: discord.isReady(), unavailableSince: selfHealingState.gatewayUnavailableSince })) {
+    return { gatewayRecovered, panels: false, cache: false };
+  }
 
   let panels = false;
   let cache = false;
@@ -2256,6 +2263,7 @@ discord.once(Events.ClientReady, async (client) => {
       if (guild) refreshInactivityPanel(guild).catch((error) => reportRuntimeError('非アクティブ監視パネル', error));
     }, 60_000);
   }
+  coreRuntimeReady = true;
   console.log(`${client.user.tag} として起動しました。接続サーバー: ${[...client.guilds.cache.values()].map((guild) => `${guild.name} (${guild.id})`).join(', ')}`);
 });
 
@@ -2270,6 +2278,11 @@ discord.on(Events.ShardReady, (shardId) => {
   discord.token = config.discordToken;
   discord.rest.setToken(config.discordToken);
   console.log(`Discord Gateway shard ${shardId} connected.`);
+  if (coreRuntimeReady) {
+    const guild = discord.guilds.cache.get(AMA_GUILD_ID);
+    if (guild) requestInactivityPanelRefresh(guild, 1_000);
+    requestSelfHealing('panel', 2_000);
+  }
 });
 discord.on(Events.ShardReconnecting, (shardId) => {
   if (!selfHealingState.gatewayUnavailableSince) selfHealingState.gatewayUnavailableSince = Date.now();
@@ -2278,6 +2291,7 @@ discord.on(Events.ShardReconnecting, (shardId) => {
     selfHealingState.lastGatewayReconnectLogAt = now;
     console.warn(`Discord Gateway shard ${shardId} is reconnecting. discord.jsの標準復旧を待機します。`);
   }
+  requestSelfHealing('communication', GATEWAY_RECOVERY_GRACE_MS);
 });
 discord.on(Events.ShardDisconnect, (event, shardId) => {
   if (!selfHealingState.gatewayUnavailableSince) selfHealingState.gatewayUnavailableSince = Date.now();

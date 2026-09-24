@@ -2,6 +2,10 @@ export function shouldRunMaintenance({ now, lastRunAt = 0, intervalMs }) {
   return Number.isFinite(intervalMs) && intervalMs > 0 && now - lastRunAt >= intervalMs;
 }
 
+export function isGatewayOperational({ isReady, unavailableSince = 0 }) {
+  return Boolean(isReady) && !unavailableSince;
+}
+
 export function shouldRecoverGateway({ isReady, now, unavailableSince = 0, lastRecoveryAt = 0, graceMs, cooldownMs }) {
   if (isReady) return false;
   if (!unavailableSince) return false;
