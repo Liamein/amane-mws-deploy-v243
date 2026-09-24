@@ -48,8 +48,6 @@ export const commands = [
     .addAttachmentOption((option) => option.setName('file').setDescription('添付するファイル（任意）').setRequired(false)),
   new SlashCommandBuilder().setName('server-log-config').setDescription('入退室ログの送信先を設定します（サーバー管理権限が必要）')
     .addChannelOption((option) => option.setName('channel').setDescription('入退室ログの送信先').setRequired(true)),
-  new SlashCommandBuilder().setName('inactivity-status').setDescription('最終アクティブ日時を確認します（サーバー管理権限が必要）')
-    .addUserOption((option) => option.setName('member').setDescription('確認するメンバー').setRequired(true)),
   new SlashCommandBuilder().setName('mod-config').setDescription('荒らし対策の設定を変更・確認します（サーバー管理権限が必要）')
     .addSubcommand((subcommand) => subcommand.setName('log').setDescription('モデレーションログの送信先を指定します').addChannelOption((option) => option.setName('channel').setDescription('ログを記録するチャンネル').setRequired(true)))
     .addSubcommand((subcommand) => subcommand.setName('ng-add').setDescription('NGワードを追加します').addStringOption((option) => option.setName('word').setDescription('削除対象にする語句').setRequired(true).setMaxLength(100)))

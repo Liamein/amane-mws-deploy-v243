@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 export const DAY_MS = 24 * 60 * 60 * 1_000;
 export const INACTIVITY_KICK_DAYS = 15;
@@ -24,6 +25,8 @@ export class ActivityStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.activities = {};
+    this.kicked = {};
+    this.panelMessages = {};
     this.saveInFlight = null;
     this.saveRequested = false;
   }
@@ -32,8 +35,11 @@ export class ActivityStore {
     try {
       const saved = JSON.parse(await readFile(this.filePath, 'utf8'));
       this.activities = {};
-      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
-        for (const [guildId, members] of Object.entries(saved)) {
+      this.kicked = {};
+      this.panelMessages = {};
+      const activitySource = saved?.activities && typeof saved.activities === 'object' ? saved.activities : saved;
+      if (activitySource && typeof activitySource === 'object' && !Array.isArray(activitySource)) {
+        for (const [guildId, members] of Object.entries(activitySource)) {
           if (!members || typeof members !== 'object' || Array.isArray(members)) continue;
           for (const [userId, activity] of Object.entries(members)) {
             const lastActiveAt = Number(activity?.lastActiveAt);
@@ -49,6 +55,16 @@ export class ActivityStore {
           }
         }
       }
+      if (saved?.kicked && typeof saved.kicked === 'object') {
+        for (const [guildId, users] of Object.entries(saved.kicked)) {
+          if (!users || typeof users !== 'object' || Array.isArray(users)) continue;
+          this.kicked[guildId] = Object.fromEntries(Object.entries(users).filter(([, entry]) => Number.isFinite(entry?.kickedAt)));
+        }
+      }
+      if (saved?.panelMessages && typeof saved.panelMessages === 'object') {
+        this.panelMessages = Object.fromEntries(Object.entries(saved.panelMessages)
+          .map(([guildId, ids]) => [guildId, Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []]));
+      }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       this.activities = {};
@@ -61,8 +77,9 @@ export class ActivityStore {
     const persist = async () => {
       do {
         this.saveRequested = false;
-        const snapshot = JSON.stringify(this.activities, null, 2);
-        await mkdir(new URL('.', this.filePath), { recursive: true });
+        const snapshot = JSON.stringify({ activities: this.activities, kicked: this.kicked, panelMessages: this.panelMessages }, null, 2);
+        const directory = this.filePath instanceof URL ? new URL('.', this.filePath) : dirname(this.filePath);
+        await mkdir(directory, { recursive: true });
         await writeFile(this.filePath, snapshot, 'utf8');
       } while (this.saveRequested);
     };
@@ -108,5 +125,28 @@ export class ActivityStore {
     if (!this.activities[guildId]?.[userId]) return false;
     delete this.activities[guildId][userId];
     return true;
+  }
+
+  kickedEntries(guildId) {
+    return Object.entries(this.kicked[guildId] || {}).map(([userId, entry]) => ({ userId, ...entry }));
+  }
+
+  recordKick(guildId, userId, entry) {
+    if (!this.kicked[guildId]) this.kicked[guildId] = {};
+    this.kicked[guildId][userId] = { ...entry };
+  }
+
+  restoreKickedUser(guildId, userId) {
+    if (!this.kicked[guildId]?.[userId]) return false;
+    delete this.kicked[guildId][userId];
+    return true;
+  }
+
+  getPanelMessageIds(guildId) {
+    return [...(this.panelMessages[guildId] || [])];
+  }
+
+  setPanelMessageIds(guildId, messageIds) {
+    this.panelMessages[guildId] = [...new Set(messageIds.filter((id) => typeof id === 'string'))];
   }
 }

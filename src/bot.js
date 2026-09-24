@@ -26,6 +26,8 @@ import { DEFAULT_VERIFICATION_DM_MESSAGE, VerificationSettingsStore } from './ve
 import { shouldImmediatelyForwardForumUpload } from './forum-upload.js';
 import { createErrorDeduper } from './error-deduper.js';
 import { globalCommands } from './commands.js';
+import { deleteRequestedMessages } from './clear-messages.js';
+import { buildInactivityPanelPayloads, INACTIVITY_PANEL_CHANNEL_ID } from './inactivity-panel.js';
 
 const config = loadConfig();
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildInvites, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent];
@@ -55,6 +57,9 @@ const voiceMuteDisconnecting = new Set();
 const inactivityKickContexts = new Set();
 const forumUploadsInFlight = new Set();
 let inactivityTimer;
+let inactivityPanelTimer;
+let inactivityPanelRefreshTimer;
+let inactivityPanelRefreshInFlight = null;
 let dmHistoryTimer;
 let voiceMuteTimer;
 let licenseTimer;
@@ -1687,6 +1692,7 @@ async function recordActivity(guild, user) {
   if (!tracksGuild(guild) || !user || user.bot) return;
   activityStore.touch(guild.id, user.id);
   await activityStore.save();
+  requestInactivityPanelRefresh(guild);
 }
 
 function inactivityKickKey(guildId, userId) {
@@ -1789,6 +1795,45 @@ function isInactivityExempt(member, guild) {
   return !isInactivityMonitoringTarget({ userId: member.id, ownerId: guild.ownerId, isBot: member.user.bot });
 }
 
+async function refreshInactivityPanel(guild) {
+  if (!tracksGuild(guild)) return;
+  if (inactivityPanelRefreshInFlight) return inactivityPanelRefreshInFlight;
+  inactivityPanelRefreshInFlight = (async () => {
+    const channel = guild.channels.cache.get(INACTIVITY_PANEL_CHANNEL_ID)
+      || await guild.channels.fetch(INACTIVITY_PANEL_CHANNEL_ID).catch(() => null);
+    if (!channel?.isTextBased() || !channel.isSendable()) throw new Error(`非アクティブ監視パネルの送信先 ${INACTIVITY_PANEL_CHANNEL_ID} が利用できません。`);
+    const payloads = buildInactivityPanelPayloads({ guild, activities: activityStore.entries(guild.id), kicked: activityStore.kickedEntries(guild.id) });
+    const previousIds = activityStore.getPanelMessageIds(guild.id);
+    const nextIds = [];
+    for (let index = 0; index < payloads.length; index += 1) {
+      const existing = previousIds[index] ? await channel.messages.fetch(previousIds[index]).catch(() => null) : null;
+      const message = existing?.author.id === discord.user.id
+        ? await existing.edit(payloads[index])
+        : await channel.send(payloads[index]);
+      nextIds.push(message.id);
+    }
+    for (const obsoleteId of previousIds.slice(payloads.length)) {
+      const obsolete = await channel.messages.fetch(obsoleteId).catch(() => null);
+      if (obsolete?.author.id === discord.user.id) await obsolete.delete().catch(() => {});
+    }
+    if (JSON.stringify(previousIds) !== JSON.stringify(nextIds)) {
+      activityStore.setPanelMessageIds(guild.id, nextIds);
+      await activityStore.save();
+    }
+  })().finally(() => { inactivityPanelRefreshInFlight = null; });
+  return inactivityPanelRefreshInFlight;
+}
+
+function requestInactivityPanelRefresh(guild, delayMs = 5_000) {
+  if (!tracksGuild(guild)) return;
+  if (inactivityPanelRefreshTimer) clearTimeout(inactivityPanelRefreshTimer);
+  inactivityPanelRefreshTimer = setTimeout(() => {
+    inactivityPanelRefreshTimer = null;
+    refreshInactivityPanel(guild).catch((error) => reportRuntimeError('非アクティブ監視パネル', error));
+  }, delayMs);
+  inactivityPanelRefreshTimer.unref();
+}
+
 async function seedGuildActivity(guild) {
   if (!tracksGuild(guild)) return;
   let changed = false;
@@ -1863,6 +1908,7 @@ async function runInactivityCheck(guild) {
         console.error(`非アクティブKickを実行できません: ${member.user.tag} よりBotロールを上位に配置してください。`);
         continue;
       }
+      let dmSent = false;
       try {
         await sendTrackedDm(member, {
           embeds: [new EmbedBuilder()
@@ -1873,6 +1919,7 @@ async function runInactivityCheck(guild) {
             .setFooter({ text: '再参加後、活動カウントは新しく開始されます。' })
             .setTimestamp()],
         });
+        dmSent = true;
       }
       catch (error) { console.warn(`Kick前DMを送れませんでした (${member.user.tag}):`, error.message); }
       const kickKey = inactivityKickKey(guild.id, member.id);
@@ -1880,9 +1927,17 @@ async function runInactivityCheck(guild) {
       try {
         await member.kick(`${INACTIVITY_KICK_DAYS}日間アクティブではなかったため`);
         activityStore.remove(guild.id, activity.userId);
+        activityStore.recordKick(guild.id, activity.userId, {
+          username: member.user.username,
+          displayName: member.displayName,
+          lastActiveAt: activity.lastActiveAt,
+          kickedAt: Date.now(),
+          dmSent,
+        });
         changed = true;
         await writeInactivityKickLog(member, activity).catch((error) => reportRuntimeError('非アクティブ退出ログ', error, [{ name: '対象ユーザーID', value: `\`${member.id}\`` }]));
         console.log(`非アクティブKick: ${member.user.tag}`);
+        requestInactivityPanelRefresh(guild, 0);
       } catch (error) {
         inactivityKickContexts.delete(kickKey);
         console.error(`非アクティブKickに失敗しました (${member.user.tag}):`, error.message);
@@ -1899,7 +1954,7 @@ async function handleCommand(interaction) {
   const { commandName } = interaction;
   if (commandName === 'help') {
     const commands = accessLevel === 'owner'
-      ? '🧭 **確認**　`/ping` `/uptime` `/user`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config` `/inactivity-status`\n✨ **パネル**　`/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config`'
+      ? '🧭 **確認**　`/ping` `/uptime` `/user`\n📣 **投稿**　`/announce` `/poll` `/send-dm`\n🛡️ **管理**　`/clear` `/mod-config`\n✨ **パネル**　`/verification-panel` `/mbti-panel` `/asset-storage` `/利用権購入`\n⚙️ **設定**　`/command-access` `/server-log-config`'
       : '🧭 **確認コマンド**　`/ping` `/uptime` `/user`';
     return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 あまね・コマンドガイド').setDescription(`╭─ **使えるコマンド** ─╮\n${commands}\n╰────────────────╯\n\n${accessLevel === 'owner' ? '✅ あなたは登録管理者です。すべてのコマンドを利用できます。' : '🔐 登録済みユーザーは確認系コマンドを利用できます。'}`).setFooter({ text: '各コマンドを選ぶと日本語の入力説明が表示されます。' })] });
   }
@@ -1968,7 +2023,16 @@ async function handleCommand(interaction) {
     polls.set(pollId, { options, votes: new Map() });
     return interaction.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('📊 投票').setDescription(interaction.options.getString('question', true)).setFooter({ text: '同じ選択肢をもう一度押すと投票を取り消せます。' })], components: [new ActionRowBuilder().addComponents(options.map((option, index) => new ButtonBuilder().setCustomId(`poll:${pollId}:${index}`).setLabel(`${option} (0)`).setStyle(ButtonStyle.Primary)))] });
   }
-  if (commandName === 'clear') { requirePermission(interaction, PermissionFlagsBits.ManageMessages); const deleted = await interaction.channel.bulkDelete(interaction.options.getInteger('count', true), true); return interaction.reply({ ephemeral: true, content: `${deleted.size}件のメッセージを削除しました。` }); }
+  if (commandName === 'clear') {
+    requirePermission(interaction, PermissionFlagsBits.ManageMessages);
+    const requested = interaction.options.getInteger('count', true);
+    await interaction.deferReply({ ephemeral: true });
+    const result = await deleteRequestedMessages(interaction.channel, requested);
+    const detail = result.deleted === requested
+      ? `指定どおり **${result.deleted}件** を削除しました。`
+      : `削除可能なメッセージが不足していたため、指定${requested}件のうち **${result.deleted}件** を削除しました。`;
+    return interaction.editReply({ content: `✅ ${detail}` });
+  }
   if (commandName === 'announce') {
     requirePermission(interaction, PermissionFlagsBits.ManageGuild);
     const channel = interaction.options.getChannel('channel', true);
@@ -2127,14 +2191,6 @@ async function handleCommand(interaction) {
     await message.edit(buildRecruitmentPanel(updated));
     return interaction.reply({ ephemeral: true, content: `✅ 募集パネル \`${updated.id}\` を更新しました。` });
   }
-  if (commandName === 'inactivity-status') {
-    requirePermission(interaction, PermissionFlagsBits.ManageGuild);
-    const user = interaction.options.getUser('member', true);
-    const activity = activityStore.get(interaction.guild.id, user.id);
-    if (!activity) return interaction.reply({ ephemeral: true, content: `${user} の活動記録はまだありません。` });
-    const elapsedDays = Math.floor((Date.now() - activity.lastActiveAt) / DAY_MS);
-    return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(0xf28ac0).setTitle(`${user.username} の最終アクティブ`).setDescription(`<t:${Math.floor(activity.lastActiveAt / 1_000)}:F>（${elapsedDays}日経過）`).setFooter({ text: `DM送信済み: ${activity.notifiedDays.length ? activity.notifiedDays.map((day) => `${day}日`).join(' / ') : 'なし'}` })] });
-  }
   if (commandName === 'mod-config') {
     requirePermission(interaction, PermissionFlagsBits.ManageGuild);
     const subcommand = interaction.options.getSubcommand();
@@ -2230,9 +2286,14 @@ discord.once(Events.ClientReady, async (client) => {
     const runInactivityCycle = async (guild) => {
       await seedGuildActivity(guild);
       await runInactivityCheck(guild);
+      await refreshInactivityPanel(guild).catch((error) => reportRuntimeError('非アクティブ監視パネル', error));
     };
     for (const guild of client.guilds.cache.values()) await runInactivityCycle(guild);
     inactivityTimer = setInterval(() => Promise.all([...client.guilds.cache.values()].map(runInactivityCycle)).catch((error) => console.error('非アクティブ監視エラー:', error)), 60 * 60 * 1_000);
+    inactivityPanelTimer = setInterval(() => {
+      const guild = client.guilds.cache.get(AMA_GUILD_ID);
+      if (guild) refreshInactivityPanel(guild).catch((error) => reportRuntimeError('非アクティブ監視パネル', error));
+    }, 60_000);
   }
   console.log(`${client.user.tag} として起動しました。接続サーバー: ${[...client.guilds.cache.values()].map((guild) => `${guild.name} (${guild.id})`).join(', ')}`);
 });
@@ -2308,8 +2369,10 @@ discord.on(Events.GuildMemberAdd, async (member) => {
     ? sendInvitePurchaseDm(member).catch((error) => console.warn(`招待限定DMを送れませんでした (${member.user.tag}):`, error.message))
     : sendVerificationDm(member).catch((error) => console.warn(`入室認証DMを送れませんでした (${member.user.tag}):`, error.message))];
   if (tracksGuild(member.guild)) {
-    activityStore.ensure(member.guild.id, member.id);
+    activityStore.restoreKickedUser(member.guild.id, member.id);
+    activityStore.touch(member.guild.id, member.id);
     tasks.push(activityStore.save(), writeMemberLog(member, true).catch((error) => console.warn(`入室ログを送れませんでした (${member.user.tag}):`, error.message)));
+    requestInactivityPanelRefresh(member.guild, 0);
   }
   return Promise.all(tasks).catch((error) => console.error('入室処理エラー:', error));
 });
@@ -2317,6 +2380,9 @@ discord.on(Events.GuildMemberRemove, async (member) => {
   if (await guestAccess.handleRemove(member).catch((error) => { reportRuntimeError('ゲスト退出の後処理', error); return false; })) return;
   if (!tracksGuild(member.guild) || member.user.bot) return;
   if (inactivityKickContexts.has(inactivityKickKey(member.guild.id, member.id))) return;
+  activityStore.remove(member.guild.id, member.id);
+  await activityStore.save();
+  requestInactivityPanelRefresh(member.guild, 0);
   return Promise.all([
     sendTrackedDm(member, { embeds: [new EmbedBuilder().setColor(0x99aab5).setTitle(`${member.guild.name}から退出しました`).setDescription('また参加する際は、DMまたはサーバー内の認証パネルから認証できます。')] })
       .catch((error) => console.warn(`退出DMを送れませんでした (${member.user.tag}):`, error.message)),
