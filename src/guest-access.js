@@ -317,6 +317,17 @@ export class GuestAccess {
             await this.reportError('ゲスト用ロールの自動削除', new Error(`ロールを削除できません: ${role.name} (${role.id})`));
             continue;
           }
+          for (const [code, pending] of Object.entries(this.store.data.pendingInvites)) {
+            if (pending.roleId !== role.id) continue;
+            await this.revokeInvite(pending);
+            delete this.store.data.pendingInvites[code];
+            rolesChanged = true;
+          }
+          for (const session of Object.values(this.store.data.sessions)) {
+            if (session.roleId === role.id && ['pending', 'active'].includes(session.status)) {
+              await this.endSession(guild, session, 'ゲスト用ロールの6時間期限が終了');
+            }
+          }
           await role.delete(isUntrackedDuplicate ? '保存情報から外れた重複ゲスト用ロールを自動削除' : '生成から6時間が経過したゲスト用ロールを自動削除');
           for (const [voiceId, value] of Object.entries(this.store.data.roles)) {
             if (roleEntry(value).id === role.id) { delete this.store.data.roles[voiceId]; rolesChanged = true; }
