@@ -66,6 +66,7 @@ let voiceMuteTimer;
 let licenseTimer;
 let panelRepairTimer;
 let selfHealingTimer;
+let generatedRoleTimer;
 const selfHealingState = {
   inFlight: new Set(),
   lastCacheCleanupAt: 0,
@@ -120,6 +121,8 @@ const INVITE_ACCESS_CHANNEL_ID = '1543522630584369243';
 const INVITE_ACCESS_CODE = 'DYjtfBm2ec';
 const INVITE_ACCESS_LEGACY_ROLE_ID = '1417565680038969344';
 const INVITE_ACCESS_ROLE_NAME = '購入チャンネル閲覧｜招待限定';
+const GENERATED_ROLE_TTL_MS = 6 * 60 * 60_000;
+const GENERATED_ROLE_SWEEP_INTERVAL_MS = 5 * 60_000;
 const USAGE_ACCESS_INVITE_URL = 'https://discord.gg/DYjtfBm2ec';
 const ASSET_STORAGE_PANEL_CHANNEL_ID = '1543393706537918585';
 const ASSET_STORAGE_CATEGORY_ID = '1543393587616817162';
@@ -721,6 +724,68 @@ async function restrictInviteRoleToPurchaseChannel(guild, settings) {
   }
 }
 
+function generatedRoleCreatedAt(role, fallback = null) {
+  return Number(role?.createdTimestamp) || Number(fallback) || 0;
+}
+
+let inviteAccessRoleJob = Promise.resolve();
+function withInviteAccessRoleLock(operation) {
+  const job = inviteAccessRoleJob.catch(() => {}).then(operation);
+  inviteAccessRoleJob = job;
+  return job;
+}
+
+async function sweepInviteAccessRolesLocked(guild, now = Date.now()) {
+  const settings = inviteAccessStore.get(guild.id);
+  const roles = await guild.roles.fetch();
+  let settingsChanged = false;
+  for (const role of roles.values()) {
+    if (role.name !== INVITE_ACCESS_ROLE_NAME) continue;
+    const isUntrackedDuplicate = role.id !== settings.roleId;
+    const createdAt = generatedRoleCreatedAt(role, isUntrackedDuplicate ? null : settings.roleCreatedAt);
+    const isExpired = createdAt && now - createdAt >= GENERATED_ROLE_TTL_MS;
+    if (!isUntrackedDuplicate && !isExpired) continue;
+    if (!role.editable) {
+      await reportRuntimeError('購入パネル用ロールの自動削除', new Error(`ロールを削除できません: ${role.name} (${role.id})`));
+      continue;
+    }
+    await role.delete(isUntrackedDuplicate ? '保存情報から外れた重複購入パネル用ロールを自動削除' : '生成から6時間が経過した購入パネル用ロールを自動削除');
+    if (role.id === settings.roleId) {
+      inviteAccessStore.update(guild.id, { roleId: null, roleCreatedAt: null });
+      settingsChanged = true;
+    }
+  }
+  if (settings.roleId && !roles.has(settings.roleId)) {
+    inviteAccessStore.update(guild.id, { roleId: null, roleCreatedAt: null });
+    settingsChanged = true;
+  } else if (settings.roleId && !settings.roleCreatedAt) {
+    const currentRole = roles.get(settings.roleId);
+    inviteAccessStore.update(guild.id, { roleCreatedAt: generatedRoleCreatedAt(currentRole, now) });
+    settingsChanged = true;
+  }
+  if (settingsChanged) await inviteAccessStore.save();
+}
+
+function sweepInviteAccessRoles(guild, now = Date.now()) {
+  return withInviteAccessRoleLock(() => sweepInviteAccessRolesLocked(guild, now));
+}
+
+function ensureInviteAccessRole(guild) {
+  return withInviteAccessRoleLock(async () => {
+    await sweepInviteAccessRolesLocked(guild);
+    let settings = inviteAccessStore.get(guild.id);
+    let role = settings.roleId && await guild.roles.fetch(settings.roleId).catch(() => null);
+    if (!role) {
+      role = await guild.roles.create({ name: INVITE_ACCESS_ROLE_NAME, permissions: 0n, hoist: false, mentionable: false, reason: '購入チャンネル閲覧用（6時間で自動削除）' });
+      inviteAccessStore.update(guild.id, { roleId: role.id, roleCreatedAt: generatedRoleCreatedAt(role, Date.now()) });
+      await inviteAccessStore.save();
+      settings = inviteAccessStore.get(guild.id);
+      await restrictInviteRoleToPurchaseChannel(guild, settings);
+    }
+    return role;
+  });
+}
+
 async function configureInviteLimitedPurchaseAccess(guild) {
   if (guild.id !== INVITE_ACCESS_GUILD_ID) return;
   const settings = inviteAccessStore.get(guild.id);
@@ -728,8 +793,7 @@ async function configureInviteLimitedPurchaseAccess(guild) {
   if (!channel?.isTextBased()) throw new Error('利用権購入チャンネルが見つかりません。');
   const legacyRole = await guild.roles.fetch(INVITE_ACCESS_LEGACY_ROLE_ID).catch(() => null);
   if (!legacyRole) throw new Error('既存メンバーの閲覧権ロールが見つかりません。');
-  let inviteRole = settings.roleId && await guild.roles.fetch(settings.roleId).catch(() => null);
-  if (!inviteRole) inviteRole = await guild.roles.create({ name: INVITE_ACCESS_ROLE_NAME, permissions: 0n, hoist: false, mentionable: false, reason: '指定招待リンク経由の利用権購入チャンネル閲覧用' });
+  const inviteRole = await ensureInviteAccessRole(guild);
 
   const members = await guild.members.fetch();
   const grandfatheredMembers = [...members.values()].filter((member) => !member.user.bot && member.roles.cache.has(legacyRole.id));
@@ -748,6 +812,7 @@ async function configureInviteLimitedPurchaseAccess(guild) {
     inviteCode: INVITE_ACCESS_CODE,
     channelId: channel.id,
     roleId: inviteRole.id,
+    roleCreatedAt: generatedRoleCreatedAt(inviteRole, Date.now()),
     legacyRoleId: legacyRole.id,
     inviteUses: inviteUsesByCode([...invites.values()]),
     configuredAt: new Date().toISOString(),
@@ -759,7 +824,7 @@ async function configureInviteLimitedPurchaseAccess(guild) {
 
 async function grantInviteLimitedPurchaseAccess(member) {
   const settings = inviteAccessStore.get(member.guild.id);
-  if (!settings.enabled || !settings.inviteCode || !settings.roleId) return false;
+  if (!settings.enabled || !settings.inviteCode) return false;
   const invites = await member.guild.invites.fetch();
   const currentUses = inviteUsesByCode([...invites.values()]);
   const previousUses = settings.inviteUses?.[settings.inviteCode] || 0;
@@ -767,8 +832,7 @@ async function grantInviteLimitedPurchaseAccess(member) {
   inviteAccessStore.update(member.guild.id, { inviteUses: currentUses, snapshotAt: new Date().toISOString() });
   await inviteAccessStore.save();
   if (!usedTargetInvite) return false;
-  const role = await member.guild.roles.fetch(settings.roleId).catch(() => null);
-  if (!role) throw new Error('指定招待リンク用の閲覧ロールが見つかりません。');
+  const role = await ensureInviteAccessRole(member.guild);
   await member.roles.add(role, `指定招待リンク ${settings.inviteCode} 経由で参加`);
   await writePurchaseTicketLog({ title: '招待限定の閲覧権を付与', description: `${member} が指定招待リンクから参加したため、購入チャンネルの閲覧権を付与しました。`, content: purchaseOwnerMentions(), fields: [{ name: 'ユーザーID', value: `\`${member.id}\``, inline: true }, { name: '招待リンク', value: `https://discord.gg/${settings.inviteCode}` }, { name: '付与ロール', value: `${role}（\`${role.id}\`）` }], color: 0x57f287 });
   return true;
@@ -2235,12 +2299,17 @@ discord.once(Events.ClientReady, async (client) => {
   dmHistoryTimer = setInterval(() => dmHistoryStore.cleanup(client).catch((error) => reportRuntimeError('DM履歴の定期削除', error)), 60 * 60 * 1_000);
   const inviteAccessGuild = client.guilds.cache.get(INVITE_ACCESS_GUILD_ID);
   if (inviteAccessGuild) {
+    await sweepInviteAccessRoles(inviteAccessGuild).catch((error) => reportRuntimeError('購入パネル用ロールの起動時回収', error));
     const inviteAccessSettings = inviteAccessStore.get(inviteAccessGuild.id);
     if (!inviteAccessSettings.enabled) await configureInviteLimitedPurchaseAccess(inviteAccessGuild).catch((error) => console.error(`招待限定の閲覧設定に失敗しました:`, error.message));
     else {
-      await restrictInviteRoleToPurchaseChannel(inviteAccessGuild, inviteAccessSettings).catch((error) => console.error(`招待限定のチャンネル制限に失敗しました:`, error.message));
+      if (inviteAccessSettings.roleId) await restrictInviteRoleToPurchaseChannel(inviteAccessGuild, inviteAccessSettings).catch((error) => console.error(`招待限定のチャンネル制限に失敗しました:`, error.message));
       await refreshInviteAccessSnapshot(inviteAccessGuild).catch((error) => console.error(`招待利用回数の同期に失敗しました:`, error.message));
     }
+    generatedRoleTimer = setInterval(() => {
+      sweepInviteAccessRoles(inviteAccessGuild).catch((error) => reportRuntimeError('購入パネル用ロールの期限確認', error));
+    }, GENERATED_ROLE_SWEEP_INTERVAL_MS);
+    generatedRoleTimer.unref();
   }
   for (const guild of client.guilds.cache.values()) await createExternalInstallConsent(guild).catch((error) => console.error(`外部サーバーの同意UI投稿に失敗しました (${guild.name}):`, error.message));
   await expireDueLicenses().catch((error) => reportRuntimeError('利用権期限の確認', error));

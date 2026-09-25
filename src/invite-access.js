@@ -6,6 +6,7 @@ function normalize(value) {
     inviteCode: null,
     channelId: null,
     roleId: null,
+    roleCreatedAt: null,
     legacyRoleId: null,
     inviteUses: {},
     ...(value || {}),

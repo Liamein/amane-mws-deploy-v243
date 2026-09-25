@@ -7,7 +7,17 @@ export const GUEST_OWNER_ID = '1030896490379476992';
 export const GUEST_INVITE_AGE = 3600;
 export const GUEST_VOICE_WAIT_MS = 15 * 60_000;
 export const GUEST_LEAVE_GRACE_MS = 30_000;
+export const GENERATED_ROLE_TTL_MS = 6 * 60 * 60_000;
+export const GUEST_ROLE_PREFIX = 'ゲストVC｜';
 export class GuestAccessError extends Error {}
+
+export function roleEntry(value) {
+  return typeof value === 'string' ? { id: value, createdAt: null } : { id: value?.id ?? null, createdAt: Number(value?.createdAt) || null };
+}
+
+export function roleCreatedAt(role, fallback = null) {
+  return Number(role?.createdTimestamp) || Number(fallback) || 0;
+}
 
 // temporary:true on a normal server invite does NOT set Discord's IS_GUEST flag.
 export function isNativeGuest(member) {
@@ -104,17 +114,27 @@ export class GuestAccess {
   async ensureRole(guild, voiceChannelId) {
     return this.serial('permissions', async () => {
       let role = null;
-      if (this.store.data.roles[voiceChannelId]) {
-        role = await guild.roles.fetch(this.store.data.roles[voiceChannelId]).catch(error => {
+      const savedRole = roleEntry(this.store.data.roles[voiceChannelId]);
+      if (savedRole.id) {
+        role = await guild.roles.fetch(savedRole.id).catch(error => {
           if (error.code === 10011) return null;
           throw error;
         });
       }
       const voice = await guild.channels.fetch(voiceChannelId);
       if (voice?.type !== ChannelType.GuildVoice) throw new GuestAccessError('参加先のVCが見つかりません。');
+      if (role && Date.now() - roleCreatedAt(role, savedRole.createdAt) >= GENERATED_ROLE_TTL_MS) {
+        if (!role.editable) throw new GuestAccessError('6時間を経過したゲスト用ロールを削除できません。Botのロール位置を確認してください。');
+        await role.delete('生成から6時間が経過したゲスト用ロールを更新');
+        delete this.store.data.roles[voiceChannelId];
+        await this.store.save();
+        role = null;
+      }
       if (!role) {
-        role = await guild.roles.create({ name: `ゲストVC｜${voice.name}`.slice(0, 100), permissions: 0n, mentionable: false, reason: 'VC限定・認証不要のゲスト用' });
-        this.store.data.roles[voiceChannelId] = role.id; await this.store.save();
+        role = await guild.roles.create({ name: `${GUEST_ROLE_PREFIX}${voice.name}`.slice(0, 100), permissions: 0n, mentionable: false, reason: 'VC限定・認証不要のゲスト用（6時間で自動削除）' });
+        this.store.data.roles[voiceChannelId] = { id: role.id, createdAt: roleCreatedAt(role, Date.now()) }; await this.store.save();
+      } else if (typeof this.store.data.roles[voiceChannelId] === 'string') {
+        this.store.data.roles[voiceChannelId] = { id: role.id, createdAt: roleCreatedAt(role, Date.now()) }; await this.store.save();
       }
       if (role.permissions.bitfield !== 0n) await role.setPermissions(0n, 'ゲストはチャンネル個別許可のみ使用');
       for (const channel of (await guild.channels.fetch()).values()) {
@@ -282,6 +302,31 @@ export class GuestAccess {
   async sweep() {
     return this.serial('sweep', async () => {
       const guild = this.client.guilds.cache.get(GUEST_GUILD_ID); if (!guild) return;
+      await this.serial('permissions', async () => {
+        const now = Date.now();
+        const roles = await guild.roles.fetch();
+        const savedIds = new Set(Object.values(this.store.data.roles).map(roleEntry).map(entry => entry.id).filter(Boolean));
+        let rolesChanged = false;
+        for (const role of roles.values()) {
+          if (!role.name?.startsWith(GUEST_ROLE_PREFIX)) continue;
+          const saved = Object.values(this.store.data.roles).map(roleEntry).find(entry => entry.id === role.id);
+          const isUntrackedDuplicate = !savedIds.has(role.id);
+          const isExpired = now - roleCreatedAt(role, saved?.createdAt) >= GENERATED_ROLE_TTL_MS;
+          if (!isUntrackedDuplicate && !isExpired) continue;
+          if (!role.editable) {
+            await this.reportError('ゲスト用ロールの自動削除', new Error(`ロールを削除できません: ${role.name} (${role.id})`));
+            continue;
+          }
+          await role.delete(isUntrackedDuplicate ? '保存情報から外れた重複ゲスト用ロールを自動削除' : '生成から6時間が経過したゲスト用ロールを自動削除');
+          for (const [voiceId, value] of Object.entries(this.store.data.roles)) {
+            if (roleEntry(value).id === role.id) { delete this.store.data.roles[voiceId]; rolesChanged = true; }
+          }
+        }
+        for (const [voiceId, value] of Object.entries(this.store.data.roles)) {
+          if (!roles.has(roleEntry(value).id)) { delete this.store.data.roles[voiceId]; rolesChanged = true; }
+        }
+        if (rolesChanged) await this.store.save();
+      });
       for (const [code, session] of Object.entries(this.store.data.pendingInvites)) {
         if (Date.now() <= session.inviteExpiresAt) continue;
         await this.revokeInvite(session);
