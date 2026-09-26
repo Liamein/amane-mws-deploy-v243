@@ -28,10 +28,12 @@ import { createErrorDeduper } from './error-deduper.js';
 import { globalCommands } from './commands.js';
 import { deleteRequestedMessages } from './clear-messages.js';
 import { buildInactivityPanelPayloads, INACTIVITY_PANEL_CHANNEL_ID } from './inactivity-panel.js';
+import { installSocialMediaEmbeds } from './social-media.js';
 
 const config = loadConfig();
 const gatewayIntents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildInvites, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent];
 const discord = new Client({ intents: gatewayIntents, partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User] });
+installSocialMediaEmbeds(discord);
 const startedAt = Date.now();
 const polls = new Map();
 const commandAccessStore = new CommandAccessStore(new URL('../data/command-access.json', import.meta.url), config.commandOwnerIds);
