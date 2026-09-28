@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import ffmpeg from '@ffmpeg-installer/ffmpeg';
-import { claimSocialMessage, cleanSocialUrls, completeSocialMessageClaim, targetVideoBitrateKbps, transcodeDiscordVideo } from '../src/social-media.js';
+import { claimSocialMessage, cleanSocialUrls, completeSocialMessageClaim, targetVideoBitrateKbps, tiktokPost, transcodeDiscordVideo } from '../src/social-media.js';
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -49,6 +49,19 @@ test('uses the highest practical bitrate below the upload cap', () => {
   assert.equal(targetVideoBitrateKbps(1), 5000);
   assert.ok(targetVideoBitrateKbps(32) >= 2000);
   assert.equal(targetVideoBitrateKbps(3600), 350);
+});
+
+test('prefers TikTok H.264 playback URLs over the HEVC HD source', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ code: 0, data: { id: '7688470358994799885', hdplay: 'https://cdn.example/hd-hevc.mp4', play: 'https://cdn.example/play-h264.mp4', wmplay: 'https://cdn.example/wm-h264.mp4', duration: 10 } }),
+  });
+  try {
+    const post = await tiktokPost('https://www.tiktok.com/@s_z__n/video/7688470358994799885');
+    assert.deepEqual(post.media[0].urls, ['https://cdn.example/play-h264.mp4', 'https://cdn.example/wm-h264.mp4']);
+    assert.equal(post.media[0].transcodeVideo, undefined);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('normalizes HEVC video to Discord H.264/AAC', async () => {

@@ -114,7 +114,7 @@ export async function tiktokPost(original) {
   const images = Array.isArray(data.images) ? data.images.filter(Boolean) : [];
   const media = images.length
     ? images.slice(0, MAX_FILES).map((url, index) => ({ urls: [url], name: `tiktok-${data.id}-${index + 1}.jpg` }))
-    : [{ urls: [data.hdplay, data.play, data.wmplay].filter(Boolean), name: `tiktok-${data.id}.mp4`, transcodeVideo: true, durationSeconds: Number(data.duration) || 0 }];
+    : [{ urls: [data.play, data.wmplay].filter(Boolean), name: `tiktok-${data.id}.mp4` }];
   return { platform: 'TikTok', authorName: data.author?.nickname || data.author?.unique_id || 'TikTok Creator', handle: data.author?.unique_id ? `@${data.author.unique_id}` : '', authorUrl: data.author?.unique_id ? `https://www.tiktok.com/@${data.author.unique_id}` : original, avatar: data.author?.avatar, text: data.title || 'TikTokの投稿', replies: data.comment_count, reposts: data.share_count, likes: data.digg_count, views: data.play_count, media };
 }
 
