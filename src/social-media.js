@@ -11,6 +11,8 @@ const MAX_FILES = 4;
 const MAX_FILE_BYTES = 9_500_000;
 const MAX_INPUT_BYTES = 80_000_000;
 const CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+const PROCESSING_CLAIM_MAX_AGE_MS = 5 * 60_000;
+const RECOVERY_MESSAGE_MAX_AGE_MS = 24 * 60 * 60_000;
 const CLAIM_ROOT = path.join(process.cwd(), 'data', 'social-media-claims');
 const processing = new Set();
 
@@ -25,15 +27,33 @@ function claimPath(messageId, root = CLAIM_ROOT) {
 
 export async function claimSocialMessage(messageId, root = CLAIM_ROOT) {
   await mkdir(root, { recursive: true });
-  try {
-    const handle = await open(claimPath(messageId, root), 'wx');
-    await handle.writeFile(String(Date.now()), 'utf8');
-    await handle.close();
-    return true;
-  } catch (error) {
-    if (error.code === 'EEXIST') return false;
-    throw error;
+  const file = claimPath(messageId, root);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(file, 'wx');
+      await handle.writeFile(JSON.stringify({ status: 'processing', claimedAt: Date.now() }), 'utf8');
+      await handle.close();
+      return true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      try {
+        const raw = await readFile(file, 'utf8');
+        let claim;
+        try { claim = JSON.parse(raw); } catch { claim = { status: 'processing', claimedAt: Number(raw) || 0 }; }
+        const timestamp = Number(claim.completedAt || claim.claimedAt || 0);
+        const maxAge = claim.status === 'completed' ? CLAIM_MAX_AGE_MS : PROCESSING_CLAIM_MAX_AGE_MS;
+        if (Date.now() - timestamp <= maxAge) return false;
+        await rm(file, { force: true });
+      } catch (readError) {
+        if (readError.code !== 'ENOENT') throw readError;
+      }
+    }
   }
+  return false;
+}
+
+export async function completeSocialMessageClaim(messageId, root = CLAIM_ROOT) {
+  await writeFile(claimPath(messageId, root), JSON.stringify({ status: 'completed', completedAt: Date.now() }), 'utf8');
 }
 
 async function cleanupClaims() {
@@ -43,7 +63,12 @@ async function cleanupClaims() {
     if (!/^\d{17,20}\.claim$/.test(name)) continue;
     const file = path.join(CLAIM_ROOT, name);
     try {
-      if (now - (await stat(file)).mtimeMs > CLAIM_MAX_AGE_MS) await rm(file, { force: true });
+      const raw = await readFile(file, 'utf8').catch(() => '');
+      let claim;
+      try { claim = JSON.parse(raw); } catch { claim = { status: 'processing', claimedAt: Number(raw) || 0 }; }
+      const timestamp = Number(claim.completedAt || claim.claimedAt || (await stat(file)).mtimeMs);
+      const maxAge = claim.status === 'completed' ? CLAIM_MAX_AGE_MS : PROCESSING_CLAIM_MAX_AGE_MS;
+      if (now - timestamp > maxAge) await rm(file, { force: true });
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
@@ -124,8 +149,16 @@ async function runFfmpeg(args) {
     let stderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-4000); });
-    child.once('error', reject);
-    child.once('close', (code) => code === 0 ? resolve() : reject(new Error(`FFmpeg終了コード ${code}: ${stderr.slice(-800)}`)));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('動画変換が90秒でタイムアウトしました'));
+    }, 90_000);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg終了コード ${code}: ${stderr.slice(-800)}`));
+    });
   });
 }
 
@@ -176,7 +209,11 @@ async function handleMessage(message) {
   processing.add(message.id);
   const sent = [];
   let completed = false;
+  let typingTimer;
   try {
+    await message.channel.sendTyping().catch(() => {});
+    typingTimer = setInterval(() => message.channel.sendTyping().catch(() => {}), 8_000);
+    console.log(`SNS自動展開開始: message=${message.id} channel=${message.channelId} urls=${urls.length}`);
     for (const original of urls) {
       const data = isXUrl(original) ? await xPost(original) : await tiktokPost(original);
       const results = await Promise.allSettled(data.media.slice(0, MAX_FILES).map(downloadOne));
@@ -185,14 +222,41 @@ async function handleMessage(message) {
       sent.push(await message.channel.send({ embeds: [resultEmbed(data, original, message.author)], files, allowedMentions: { parse: [] } }));
     }
     await message.delete();
+    await completeSocialMessageClaim(message.id);
     completed = true;
+    console.log(`SNS自動展開完了: message=${message.id} files=${sent.length}`);
   } catch (error) {
     await Promise.allSettled(sent.map((item) => item.delete()));
+    await message.reply({ content: `メディア取得に失敗しました。しばらく待ってから再送してください。\n原因: ${String(error.message || error).slice(0, 160)}`, allowedMentions: { repliedUser: false } }).catch(() => {});
     throw error;
   } finally {
+    clearInterval(typingTimer);
     processing.delete(message.id);
     if (!completed) await rm(claimPath(message.id), { force: true }).catch(() => {});
   }
+}
+
+async function recoverRecentMessages(client) {
+  const cutoff = Date.now() - RECOVERY_MESSAGE_MAX_AGE_MS;
+  let recovered = 0;
+  for (const guild of client.guilds.cache.values()) {
+    for (const channel of guild.channels.cache.values()) {
+      if (!channel.isTextBased() || !channel.messages?.fetch) continue;
+      const permissions = channel.permissionsFor(client.user);
+      if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.ManageMessages])) continue;
+      const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+      if (!messages) continue;
+      const candidates = [...messages.values()]
+        .filter((message) => message.createdTimestamp >= cutoff && !message.author.bot && !message.webhookId && cleanSocialUrls(message.content || '').length)
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      for (const message of candidates) {
+        const before = processing.has(message.id);
+        await handleMessage(message).catch((error) => console.error(`SNS復旧処理エラー: message=${message.id} channel=${message.channelId}:`, error.message));
+        if (!before && !processing.has(message.id)) recovered += 1;
+      }
+    }
+  }
+  console.log(`SNS未処理メッセージ復旧確認: ${recovered} 件を照合。`);
 }
 
 export function installSocialMediaEmbeds(client) {
@@ -208,6 +272,7 @@ export function installSocialMediaEmbeds(client) {
     }
     console.log(`SNS自動展開権限確認: ${ready}/${total} チャンネル。`);
     console.log('X / TikTok メディア直接添付機能を起動しました。');
+    await recoverRecentMessages(client).catch((error) => console.error('SNS未処理メッセージ復旧エラー:', error.message));
   });
-  client.on(Events.MessageCreate, (message) => handleMessage(message).catch((error) => console.error('SNS自動展開エラー:', error.message)));
+  client.on(Events.MessageCreate, (message) => handleMessage(message).catch((error) => console.error(`SNS自動展開エラー: message=${message.id} channel=${message.channelId}:`, error.message)));
 }

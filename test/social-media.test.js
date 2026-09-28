@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import ffmpeg from '@ffmpeg-installer/ffmpeg';
-import { claimSocialMessage, cleanSocialUrls, targetVideoBitrateKbps, transcodeDiscordVideo } from '../src/social-media.js';
+import { claimSocialMessage, cleanSocialUrls, completeSocialMessageClaim, targetVideoBitrateKbps, transcodeDiscordVideo } from '../src/social-media.js';
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -29,6 +29,19 @@ test('allows only one worker to claim a Discord message', async () => {
   try {
     const results = await Promise.all([claimSocialMessage('1548856006241689701', root), claimSocialMessage('1548856006241689701', root)]);
     assert.deepEqual(results.sort(), [false, true]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('reclaims stale processing locks but retains completed locks', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'amane-claim-state-test-'));
+  const id = '1554116931458437221';
+  try {
+    assert.equal(await claimSocialMessage(id, root), true);
+    assert.equal(await claimSocialMessage(id, root), false);
+    await completeSocialMessageClaim(id, root);
+    assert.equal(await claimSocialMessage(id, root), false);
+    await writeFile(path.join(root, `${id}.claim`), JSON.stringify({ status: 'processing', claimedAt: Date.now() - 6 * 60_000 }));
+    assert.equal(await claimSocialMessage(id, root), true);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
