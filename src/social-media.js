@@ -11,7 +11,7 @@ const MAX_FILES = 4;
 const MAX_FILE_BYTES = 9_500_000;
 const MAX_INPUT_BYTES = 80_000_000;
 const CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
-const PROCESSING_CLAIM_MAX_AGE_MS = 5 * 60_000;
+const PROCESSING_CLAIM_MAX_AGE_MS = 30_000;
 const RECOVERY_MESSAGE_MAX_AGE_MS = 24 * 60 * 60_000;
 const CLAIM_ROOT = path.join(process.cwd(), 'data', 'social-media-claims');
 const processing = new Set();
@@ -172,8 +172,8 @@ async function runFfmpeg(args) {
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-4000); });
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error('動画変換が90秒でタイムアウトしました'));
-    }, 90_000);
+      reject(new Error('動画変換が50秒でタイムアウトしました'));
+    }, 50_000);
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', (code) => {
       clearTimeout(timer);
@@ -185,7 +185,7 @@ async function runFfmpeg(args) {
 
 async function transcodeVideoFile(input, output, durationSeconds) {
   const bitrate = targetVideoBitrateKbps(durationSeconds);
-  await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-b:v', `${bitrate}k`, '-maxrate', `${bitrate}k`, '-bufsize', `${bitrate * 2}k`, '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', output]);
+  await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'ultrafast', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-r', '30', '-b:v', `${bitrate}k`, '-maxrate', `${bitrate}k`, '-bufsize', `${bitrate * 2}k`, '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', output]);
   const outputSize = (await stat(output)).size;
   if (!outputSize || outputSize > MAX_FILE_BYTES) throw new Error(`Discord互換動画が添付上限を超えました (${outputSize} bytes)`);
 }
