@@ -135,6 +135,27 @@ async function responseBuffer(response, maxBytes) {
   return Buffer.concat(chunks, total);
 }
 
+async function responseToFile(response, file, maxBytes) {
+  const announced = Number(response.headers.get('content-length') || 0);
+  if (announced > maxBytes) throw new Error(`ファイルが大きすぎます (${announced} bytes)`);
+  const handle = await open(file, 'w');
+  let total = 0;
+  try {
+    for await (const chunk of response.body ?? []) {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`ファイルサイズが上限外です (${total} bytes超)`);
+      }
+      await handle.write(Buffer.from(chunk));
+    }
+  } finally {
+    await handle.close();
+  }
+  if (!total) throw new Error('取得したファイルが空です');
+  return total;
+}
+
 export function targetVideoBitrateKbps(durationSeconds) {
   const duration = Number(durationSeconds);
   if (!Number.isFinite(duration) || duration <= 0) return 1800;
@@ -162,17 +183,35 @@ async function runFfmpeg(args) {
   });
 }
 
+async function transcodeVideoFile(input, output, durationSeconds) {
+  const bitrate = targetVideoBitrateKbps(durationSeconds);
+  await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-b:v', `${bitrate}k`, '-maxrate', `${bitrate}k`, '-bufsize', `${bitrate * 2}k`, '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', output]);
+  const outputSize = (await stat(output)).size;
+  if (!outputSize || outputSize > MAX_FILE_BYTES) throw new Error(`Discord互換動画が添付上限を超えました (${outputSize} bytes)`);
+}
+
 export async function transcodeDiscordVideo(bytes, durationSeconds) {
   const directory = await mkdtemp(path.join(tmpdir(), 'amane-social-'));
   const input = path.join(directory, 'input.mp4');
   const output = path.join(directory, 'output.mp4');
   try {
     await writeFile(input, bytes);
-    const bitrate = targetVideoBitrateKbps(durationSeconds);
-    await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-b:v', `${bitrate}k`, '-maxrate', `${bitrate}k`, '-bufsize', `${bitrate * 2}k`, '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart', output]);
+    await transcodeVideoFile(input, output, durationSeconds);
     const normalized = await readFile(output);
-    if (!normalized.length || normalized.length > MAX_FILE_BYTES) throw new Error(`Discord互換動画が添付上限を超えました (${normalized.length} bytes)`);
     return normalized;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function downloadAndTranscode(response, durationSeconds) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'amane-social-'));
+  const input = path.join(directory, 'input.mp4');
+  const output = path.join(directory, 'output.mp4');
+  try {
+    await responseToFile(response, input, MAX_INPUT_BYTES);
+    await transcodeVideoFile(input, output, durationSeconds);
+    return await readFile(output);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -184,8 +223,9 @@ async function downloadOne(item) {
     try {
       const response = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; amane-discord-bot/2.4)' }, signal: AbortSignal.timeout(25_000), redirect: 'follow' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      let bytes = await responseBuffer(response, item.transcodeVideo ? MAX_INPUT_BYTES : MAX_FILE_BYTES);
-      if (item.transcodeVideo) bytes = await transcodeDiscordVideo(bytes, item.durationSeconds);
+      const bytes = item.transcodeVideo
+        ? await downloadAndTranscode(response, item.durationSeconds)
+        : await responseBuffer(response, MAX_FILE_BYTES);
       return new AttachmentBuilder(bytes, { name: item.name.replace(/[^A-Za-z0-9._-]/g, '_') });
     } catch (error) { lastError = error; }
   }
@@ -216,9 +256,12 @@ async function handleMessage(message) {
     console.log(`SNS自動展開開始: message=${message.id} channel=${message.channelId} urls=${urls.length}`);
     for (const original of urls) {
       const data = isXUrl(original) ? await xPost(original) : await tiktokPost(original);
-      const results = await Promise.allSettled(data.media.slice(0, MAX_FILES).map(downloadOne));
-      const files = results.filter((item) => item.status === 'fulfilled').map((item) => item.value);
-      if (!files.length) throw new Error(results.map((item) => item.reason?.message).filter(Boolean).join(' / ') || 'メディアを添付できません');
+      const files = [];
+      const errors = [];
+      for (const item of data.media.slice(0, MAX_FILES)) {
+        try { files.push(await downloadOne(item)); } catch (error) { errors.push(error); }
+      }
+      if (!files.length) throw new Error(errors.map((item) => item.message).filter(Boolean).join(' / ') || 'メディアを添付できません');
       sent.push(await message.channel.send({ embeds: [resultEmbed(data, original, message.author)], files, allowedMentions: { parse: [] } }));
     }
     await message.delete();
